@@ -1,0 +1,112 @@
+= calipers: Candidate Features
+:toc: left
+:icons: font
+
+All inputs from `resources/telegraf.conf` are implemented (see `dev.adoc`). This document lists further
+Telegraf input plugins (247 in total upstream) that are worth implementing for this FreeBSD server,
+plus FreeBSD-only data Telegraf doesn't collect. Not listed: cloud APIs, Kubernetes/Docker, Windows,
+Linux-only hardware interfaces and databases that don't run here.
+
+The guiding rules from `dev.adoc` still apply: read kernel interfaces directly (sysctl, ioctl), no
+helper processes, latencies as histograms, real counters with reset handling.
+
+== Probes
+
+Portable, same pattern as `dns_query` and `http_response` (async, all targets concurrently).
+
+[cols="1,3,1"]
+|===
+|Telegraf plugin |What |Effort
+
+|`net_response`
+|TCP connect / UDP request-response check and latency for any port (SSH, MQTT, SMTP, ClickHouse native
+port, ...).
+|Small
+
+|`ping`
+|ICMP round-trip time and packet loss, natively over a raw ICMP socket (needs root) instead of running
+`ping`.
+|Medium
+
+|`x509_cert`
+|Certificate expiry for certificate *files* on disk and for TLS on non-HTTP ports. Extends the leaf
+certificate expiry `http_response` already exports.
+|Small
+
+|`whois`
+|Domain registration expiry (e.g. `thaller.ws`). Whois output formats differ per registry.
+|Small, format handling
+
+|`filestat` / `filecount`
+|File size and age, file counts and total size per directory: backup freshness, data growth (e.g.
+ArchiveBox).
+|Small
+|===
+
+== FreeBSD kernel data
+
+Telegraf collects these only on Linux. On FreeBSD they're cheap sysctl reads.
+
+[cols="1,2,3"]
+|===
+|Telegraf plugin |FreeBSD source |What
+
+|`interrupts`
+|`hw.intrcnt`, `hw.intrnames`
+|Interrupts per device (and CPU): NIC and disk interrupt load.
+
+|`nstat`
+|`net.inet.{tcp,udp,ip,icmp}.stats` (and `net.inet6.*`)
+|Protocol counters: TCP retransmits, resets, listen queue overflows, checksum errors, UDP drops.
+
+|`kernel_vmstat`
+|`vm.stats.vm.*`
+|All VM counters: page faults, page-ins/outs, copy-on-write faults (beyond what `mem` exports).
+
+|`slab`
+|`vm.uma`
+|Kernel memory allocator (UMA) zones: kernel memory pressure and leaks.
+
+|`temp` / `sensors`
+|`hw.acpi.thermal.tz*`
+|ACPI thermal zones, beyond the CPU core temperatures of the `cpu` input.
+
+|(none)
+|RACCT (`rctl -u`, `kern.racct`)
+|*Per-jail resource usage*: CPU, memory, processes, open files, disk I/O per Bastille jail. No
+Telegraf equivalent. Needs `kern.racct.enable=1` in `/boot/loader.conf` (boot-time only).
+|===
+
+== Services on this host
+
+[cols="1,3"]
+|===
+|Telegraf plugin |Notes
+
+|`nginx`
+|`stub_status` page: active/reading/writing/waiting connections, accepts, handled, requests. Needs
+`stub_status` enabled in nginx.
+
+|`clickhouse`
+|Metrics from ClickHouse's `system.*` tables over its HTTP interface (jail `clickhouse`).
+
+|`mqtt_consumer`
+|Mosquitto `$SYS` statistics, if Mosquitto still runs.
+
+|`prometheus`
+|Not worth reimplementing: Prometheus and Mimir already expose `/metrics`; scrape them directly
+instead of proxying through calipers.
+|===
+
+== Small gaps to the current Telegraf metrics
+
+* `procstat_ppid`: parent PID, already in the process table read (`ki_ppid`).
+* Physical core count (`kern.smp.cores`). Telegraf's `system_n_physical_cpus` reports logical CPUs
+  on this host, so it isn't a real equivalent.
+
+== Recommended order
+
+. Per-jail resource usage (RACCT) and `nstat`: the most new insight for this server.
+. `net_response` and `x509_cert`: cheap, useful for alerting.
+. `interrupts`, if NIC/disk interrupt load becomes a question.
+. Service inputs, depending on which services matter (nginx, ClickHouse, Mosquitto, ...).
