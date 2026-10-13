@@ -228,14 +228,18 @@ always present), `netstat_udp_sockets`. No socket list walk, unlike Telegraf. Ma
 `sockstat`.
 
 |processes + procstat
-|One `kern.proc.proc` read per interval, shared by both
-|`processes{state}`, `processes_threads`; procstat: `procstat_cpu_seconds_total{mode}`,
-`procstat_memory_{rss,virtual}_bytes`, `procstat_threads`, `procstat_start_time_seconds`,
+|One `kern.proc.proc` read per interval, shared by both; `kern.proc.args.<pid>` only for `pattern`
+queries and truncated names; `kern.proc.filedesc.<pid>` only for matched processes
+|`processes{state}` (ps(1) letters: running, sleeping, idle (asleep > 20 s), blocked (D), stopped,
+zombie, waiting, lock), `processes_threads`. procstat: `procstat_lookup_pids{query}`,
+`procstat_cpu_seconds_total{mode}`, `procstat_memory_{rss,virtual}_bytes`, `procstat_threads`,
+`procstat_open_fds` (Telegraf has none on FreeBSD), `procstat_start_time_seconds`,
 `procstat_context_switches_total{type}`, `procstat_block_io_total{op}`,
-`procstat_lookup_pids{query}`. Labels: `query`, `process_name`, `user`, `pid` (when
-`tag_with = ["pid"]`). The duplicate `http_responsetime_exporter` entry in the config gets removed (the
-two entries would produce the same series). *[decide]*: per-pid labels cause series churn on every
-restart. Keep `pid`, or aggregate per query (sum over matching processes) by default?
+`procstat_page_faults_total{type}`. Labels `query` (e.g. `exe=nginx`), `process_name`, `user`, and
+`pid` with `tag_with = ["pid"]`; otherwise summed per (query, name, user) with counters accumulated
+from per-process increments so exits don't make totals drop. `exe`/`pattern` are regexes like
+pgrep(1)/`pgrep -f`; names cut at 19 characters are restored from argv. Exact duplicate queries are
+ignored with a warning. procstat shares the `processes` interval.
 
 |zfs
 |`kstat.zfs.misc.{arcstats,zfetchstats}` (sysctl walk at startup, reads by MIB), `/dev/zfs` ioctls
@@ -447,7 +451,6 @@ Each milestone gets its own commit (or its own PR, if you prefer reviewing that 
 == Open questions (summary)
 
 . What does `/root/src/priv/scripts/freebsd_cpu` output? Can native CPU temperature/frequency replace it?
-. procstat: keep the `pid` label, or aggregate per query?
 . smart: is a 60s default interval OK? Can we drop `path_nvme`?
 . HTTP TLS roots: bundled webpki or the system store?
 . Build location: on the server, or cross-built here (VM)?

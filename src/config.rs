@@ -85,6 +85,9 @@ pub struct Inputs {
     pub mem: Option<crate::collectors::mem::Config>,
     pub net: Option<crate::collectors::net::Config>,
     pub netstat: Option<crate::collectors::netstat::Config>,
+    pub processes: Option<crate::collectors::processes::ProcessesConfig>,
+    #[serde(default)]
+    pub procstat: Vec<crate::collectors::processes::ProcstatConfig>,
     pub swap: Option<crate::collectors::swap::Config>,
     pub system: Option<crate::collectors::system::Config>,
     pub zfs: Option<crate::collectors::zfs::Config>,

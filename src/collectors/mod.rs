@@ -37,6 +37,7 @@ pub mod kernel;
 pub mod mem;
 pub mod net;
 pub mod netstat;
+pub mod processes;
 pub mod swap;
 pub mod system;
 pub mod zfs;
@@ -93,6 +94,14 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
         out.push(Scheduled::new(
             netstat::Netstat::new(c)?,
             interval(c.interval),
+        ));
+    }
+    // Both read the same process table, so they share one collector.
+    if config.inputs.processes.is_some() || !config.inputs.procstat.is_empty() {
+        let own = config.inputs.processes.as_ref().and_then(|c| c.interval);
+        out.push(Scheduled::new(
+            processes::Processes::new(config.inputs.processes.is_some(), &config.inputs.procstat)?,
+            interval(own),
         ));
     }
     if let Some(c) = &config.inputs.internal {
