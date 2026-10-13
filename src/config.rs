@@ -78,6 +78,7 @@ fn default_listen() -> SocketAddr {
 #[serde(deny_unknown_fields)]
 pub struct Inputs {
     pub cpu: Option<crate::collectors::cpu::Config>,
+    pub disk: Option<crate::collectors::disk::Config>,
     pub internal: Option<crate::collectors::internal::Config>,
     pub kernel: Option<crate::collectors::kernel::Config>,
     pub mem: Option<crate::collectors::mem::Config>,

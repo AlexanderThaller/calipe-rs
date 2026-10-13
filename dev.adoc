@@ -190,11 +190,11 @@ real counters. Values match `swapinfo -k` and `sysctl` exactly.
 Telegraf's `inputs.kernel` is *Linux-only*, so on FreeBSD this is new data.
 
 |disk
-|`getfsstat(MNT_NOWAIT)` + `statfs`
-|`disk_{total,free,avail,used}_bytes`, `disk_inodes_{total,free}{path,device,fstype,mode}`. Also skips
-`ignore_fs` (tmpfs, devtmpfs) and `devfs`/`fdescfs`/`procfs` by default. *[decide]*: ZFS creates one
-mount per dataset, which can mean hundreds of series. Keep all of them (Telegraf's behavior) or add an
-`ignore_mount_prefix` option?
+|`getfsstat(MNT_NOWAIT)` to list mounts, then a fresh `statfs` per mount on the blocking pool
+|`disk_{total,free,avail}_bytes`, `disk_inodes_{total,free}{path,device,fstype,mode}`. Used =
+total - free in PromQL. Pseudo filesystems (devfs, fdescfs, procfs, linprocfs, linsysfs, autofs,
+mqueuefs, and anything with zero blocks) are always skipped; `ignore_fs` and `mount_points` as in
+Telegraf. All ZFS dataset mounts are reported (Telegraf's behavior). Matches `df -k -i` on UFS and ZFS.
 
 |diskio
 |`kern.devstat.all`
@@ -432,7 +432,6 @@ Each milestone gets its own commit (or its own PR, if you prefer reviewing that 
 == Open questions (summary)
 
 . What does `/root/src/priv/scripts/freebsd_cpu` output? Can native CPU temperature/frequency replace it?
-. ZFS datasets in `disk`: keep all mounts, or filter?
 . procstat: keep the `pid` label, or aggregate per query?
 . smart: is a 60s default interval OK? Can we drop `path_nvme`?
 . HTTP TLS roots: bundled webpki or the system store?
