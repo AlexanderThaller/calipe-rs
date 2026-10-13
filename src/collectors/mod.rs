@@ -33,6 +33,7 @@ pub mod cpu;
 pub mod internal;
 pub mod mem;
 pub mod swap;
+pub mod system;
 
 use std::time::Duration;
 
@@ -54,6 +55,12 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
     }
     if let Some(c) = &config.inputs.swap {
         out.push(Scheduled::new(swap::Swap::new(c)?, interval(c.interval)));
+    }
+    if let Some(c) = &config.inputs.system {
+        out.push(Scheduled::new(
+            system::System::new(c)?,
+            interval(c.interval),
+        ));
     }
     if let Some(c) = &config.inputs.internal {
         out.push(Scheduled::new(

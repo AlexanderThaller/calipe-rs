@@ -179,9 +179,9 @@ derive them in PromQL.
 real counters. Values match `swapinfo -k` and `sysctl` exactly.
 
 |system
-|`vm.loadavg`, `kern.boottime`, `hw.ncpu`, utmpx
+|getloadavg(3), `kern.boottime`, `hw.ncpu`, utmpx (getutxent(3))
 |`system_load{1,5,15}`, `system_boot_time_seconds` (instead of uptime; uptime = `time() - boot_time`),
-`system_cpus`, `system_users`
+`system_cpus`, `system_users` (sessions), `system_unique_users`
 
 |kernel
 |`vm.stats.sys.v_{swtch,intr,soft,syscall,trap}`, `vm.stats.vm.v_{forks,vforks,rforks}`
