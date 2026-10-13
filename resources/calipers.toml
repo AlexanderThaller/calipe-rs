@@ -81,4 +81,16 @@ domains = ["ip.thaller.ws"]
 record_type = "AAAA"
 servers = ["1.0.0.1", "1.1.1.1", "8.8.4.4", "8.8.8.8"]
 
+[[inputs.http_response]]
+urls = [
+  "http://ip.thaller.ws/",
+  "http://remoji.thaller.ws/",
+  "https://ip.thaller.ws/",
+  "https://remoji.thaller.ws/",
+  "https://www.google.de/",
+  "http://www.google.de/",
+  "http://archlinux.thaller.ws/",
+  "https://archlinux.thaller.ws/",
+]
+
 [inputs.internal]

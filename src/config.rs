@@ -83,6 +83,8 @@ pub struct Inputs {
     pub diskio: Option<crate::collectors::diskio::Config>,
     #[serde(default)]
     pub dns_query: Vec<crate::collectors::dns_query::Config>,
+    #[serde(default)]
+    pub http_response: Vec<crate::collectors::http_response::Config>,
     pub internal: Option<crate::collectors::internal::Config>,
     pub kernel: Option<crate::collectors::kernel::Config>,
     pub mem: Option<crate::collectors::mem::Config>,

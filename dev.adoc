@@ -108,8 +108,8 @@ that's meant for scripts is the more robust option.
 
 |HTTP client
 |`reqwest` (rustls + ring, webpki roots, no redirects followed, matching Telegraf's default).
-|ring avoids aws-lc-rs's C/cmake build, which makes cross-compiling for FreeBSD easier. *[decide]*: webpki
-bundled roots vs. the system trust store (`/usr/local/share/certs`). Proposed: webpki roots.
+|ring avoids aws-lc-rs's C/cmake build, which makes cross-compiling for FreeBSD easier. Roots come
+from the system trust store (`/etc/ssl/cert.pem` on FreeBSD) via rustls-platform-verifier.
 
 |DNS client
 |A small hand-written DNS query over UDP (query + header/rcode parsing).
@@ -279,9 +279,17 @@ question match); all probes of all blocks run concurrently in one collector
 `domains`, `record_type`, `port`, `timeout` (default 2s).
 
 |http_response
-|reqwest
-|`http_response_duration_seconds`, `http_response_status_code`, `http_response_content_length_bytes`,
-`http_response_success{url,method}`, `result` label (success, timeout, connection_failed, ...)
+|reqwest 0.13 (`rustls-no-provider` + rustls with ring, system trust store via
+rustls-platform-verifier; no aws-lc), a fresh connection per probe (no keep-alive pool), all URLs
+concurrent
+|`http_response_duration_seconds{url,method}` (histogram: DNS + TCP + TLS + full body),
+`http_response_total{url,method,result,status_code}` (result: success, response_status_code_mismatch,
+response_string_mismatch, body_read_error, timeout, dns_error, tls_error, connection_failed, error),
+`http_response_success`, `http_response_status_code`, `http_response_content_length_bytes`,
+`http_response_tls_cert_expiry_seconds{url}` (leaf certificate notAfter, parsed from DER). Config
+keys as in Telegraf: `urls`, `method`, `response_timeout` (5s), `follow_redirects` (false), `headers`,
+`body`, `response_string_match`, `response_status_code`, `insecure_skip_verify`. Results match
+Telegraf for all eight URLs.
 
 |smart
 |`smartctl --scan -j`, then `smartctl -j -a -n standby <dev>` for each device
@@ -467,7 +475,6 @@ Each milestone gets its own commit (or its own PR, if you prefer reviewing that 
 
 . What does `/root/src/priv/scripts/freebsd_cpu` output? Can native CPU temperature/frequency replace it?
 . smart: is a 60s default interval OK? Can we drop `path_nvme`?
-. HTTP TLS roots: bundled webpki or the system store?
 . Build location: on the server, or cross-built here (VM)?
 . Which FreeBSD version is the server running (13.x or 14.x)?
 . Are you OK with breaking metric names compared to Telegraf (are there Grafana dashboards that would
