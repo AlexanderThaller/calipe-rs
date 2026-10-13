@@ -1,3 +1,136 @@
-fn main() {
-    println!("Hello, world!");
+mod collector;
+mod collectors;
+mod config;
+mod sys;
+
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use clap::Parser;
+use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_util::MetricKindMask;
+
+use crate::config::Config;
+
+/// Lightweight system metrics agent exposing a Prometheus endpoint.
+#[derive(Parser)]
+#[command(version)]
+struct Cli {
+    /// Path to the configuration file.
+    #[arg(short, long, default_value = "/usr/local/etc/calipers.toml")]
+    config: PathBuf,
+
+    /// Validate the configuration and exit.
+    #[arg(long)]
+    check_config: bool,
+
+    /// Run every collector once, print the metrics to stdout and exit.
+    #[arg(long)]
+    once: bool,
+}
+
+/// Series not updated for this many times the longest collector interval are
+/// dropped, so metrics of vanished processes, disks, etc. disappear.
+const IDLE_TIMEOUT_INTERVALS: u32 = 3;
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
+    let config = Config::load(&cli.config)?;
+    if cli.check_config {
+        println!("{}: OK", cli.config.display());
+        return Ok(());
+    }
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(config, cli.once))
+}
+
+async fn run(config: Config, once: bool) -> Result<()> {
+    let scheduled = collectors::build(&config)?;
+
+    let mut builder = PrometheusBuilder::new().with_recommended_naming(true);
+    for (key, value) in &config.global_tags {
+        builder = builder.add_global_label(key, value);
+    }
+    if !config.agent.omit_hostname {
+        let host = if config.agent.hostname.is_empty() {
+            sys::hostname().context("reading hostname")?
+        } else {
+            config.agent.hostname.clone()
+        };
+        builder = builder.add_global_label("host", host);
+    }
+
+    if once {
+        let recorder = builder.build_recorder();
+        let handle = recorder.handle();
+        metrics::set_global_recorder(recorder).context("installing metrics recorder")?;
+        describe(&scheduled);
+        for mut s in scheduled {
+            s.run_once().await;
+        }
+        print!("{}", handle.render());
+        return Ok(());
+    }
+
+    let longest = scheduled
+        .iter()
+        .map(collector::Scheduled::interval)
+        .max()
+        .unwrap_or(config.agent.interval);
+    let (recorder, exporter) = builder
+        .with_http_listener(config.exporter.listen)
+        .idle_timeout(MetricKindMask::ALL, Some(longest * IDLE_TIMEOUT_INTERVALS))
+        .build()
+        .context("starting Prometheus exporter")?;
+    metrics::set_global_recorder(recorder).context("installing metrics recorder")?;
+    describe(&scheduled);
+
+    tracing::info!(
+        listen = %config.exporter.listen,
+        collectors = scheduled.len(),
+        "calipers started"
+    );
+    let exporter = tokio::spawn(exporter);
+    for s in scheduled {
+        tokio::spawn(s.run_forever());
+    }
+
+    tokio::select! {
+        result = exporter => match result {
+            Ok(Ok(())) => anyhow::bail!("exporter stopped unexpectedly"),
+            Ok(Err(err)) => anyhow::bail!("exporter failed: {err:?}"),
+            Err(err) => Err(err.into()),
+        },
+        signal = shutdown_signal() => {
+            tracing::info!(signal, "shutting down");
+            Ok(())
+        }
+    }
+}
+
+fn describe(scheduled: &[collector::Scheduled]) {
+    collector::describe();
+    for s in scheduled {
+        s.describe();
+    }
+}
+
+async fn shutdown_signal() -> &'static str {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = signal(SignalKind::terminate()).expect("installing SIGTERM handler");
+    let mut int = signal(SignalKind::interrupt()).expect("installing SIGINT handler");
+    tokio::select! {
+        _ = term.recv() => "SIGTERM",
+        _ = int.recv() => "SIGINT",
+    }
 }

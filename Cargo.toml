@@ -4,3 +4,38 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+humantime-serde = "1.1.1"
+libc = "0.2.190"
+metrics = "0.24.6"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false, features = ["http-listener"] }
+metrics-util = { version = "0.20", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.2", features = ["rt", "macros", "time", "signal", "net", "process", "sync"] }
+toml = "1.1.8"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+[[bin]]
+name = "calipers"
+path = "src/main.rs"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[dev-dependencies]
+tokio = { version = "1.53.2", features = ["test-util", "macros", "rt"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Metric values are f64; precision loss above 2^52 is irrelevant here.
+cast_precision_loss = "allow"
+# Collectors implement an async trait even when they don't await.
+unused_async = "allow"
+unused_async_trait_impl = "allow"
+# Collector constructors return Result uniformly.
+unnecessary_wraps = "allow"

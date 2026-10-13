@@ -1,0 +1,16 @@
+# calipers configuration. Translated from resources/telegraf.conf; inputs are
+# added here as they get implemented.
+
+[agent]
+interval = "10s"
+# hostname = ""          # default: gethostname()
+# omit_hostname = false
+
+[global_tags]
+realm = "hetzner"
+role = "root.thaller.ws"
+
+[exporter]
+listen = "0.0.0.0:9273"
+
+[inputs.internal]

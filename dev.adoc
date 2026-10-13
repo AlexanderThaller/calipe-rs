@@ -65,7 +65,9 @@ model.
 |Counters
 |Monotonic kernel counters are exported as Prometheus *counters* (`counter!().absolute(v)`, `_total`
 suffix). Telegraf exports everything as gauges/untyped.
-|Makes `rate()` correct and lets Prometheus handle counter resets.
+|Makes `rate()` correct and lets Prometheus handle counter resets. metrics-rs counters are `u64`, so
+cumulative values with fractional seconds (CPU time, I/O time) are exported as gauges that keep the
+`_total` name. PromQL's `rate()` works the same on them; only the `# TYPE` line differs.
 
 |CPU usage
 |Export raw `cpu_seconds_total{cpu,mode}` (ticks / `kern.clockrate` stathz) instead of Telegraf's
