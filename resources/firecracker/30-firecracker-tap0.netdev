@@ -1,0 +1,12 @@
+# Persistent tap device for the freebsd-firecracker VM.
+# Install: /etc/systemd/network/30-firecracker-tap0.netdev
+[NetDev]
+Name=tap0
+Kind=tap
+
+[Tap]
+# Owner may open the device without root. Adjust to the user running firecracker.
+User=athaller
+# Firecracker opens taps with IFF_VNET_HDR and without packet info.
+VNetHeader=yes
+PacketInfo=no

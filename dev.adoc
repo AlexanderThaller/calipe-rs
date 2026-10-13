@@ -12,7 +12,7 @@ everything else is my proposed default.
 == Goals and non-goals
 
 .Goals
-* Cover every input in `resources/telegraf.conf` on FreeBSD (13.x/14.x amd64).
+* Cover every input in `resources/telegraf.conf` on FreeBSD (amd64; tested on 15.1, 13.x/14.x expected to work).
 * Pull-only: expose metrics over HTTP via https://github.com/metrics-rs/metrics[metrics-rs] +
   `metrics-exporter-prometheus`. No push outputs.
 * Use proper Prometheus semantics where Telegraf doesn't (real counters, base units, label names that
@@ -135,9 +135,8 @@ fatal.
 These are the parts that are most likely to be wrong, so each one gets verified on a real FreeBSD VM
 (see <<testing>>).
 
-* *libc crate FreeBSD version.* `libc` defaults to the FreeBSD 11 ABI for some structs (`statfs`,
-  `kinfo_proc`, `dev_t`). I'll check what the current `libc` defaults to, and pin
-  `RUST_LIBC_UNSTABLE_FREEBSD_VERSION` (or define the structs we need) if necessary.
+* *libc crate FreeBSD version.* Checked: `libc` 0.2.190 defaults to the FreeBSD 12 ABI (64-bit
+  `ino_t`/`dev_t`, current `statfs` and `kinfo_proc`), which matches 13, 14 and 15. No pinning needed.
 * *`struct devstat`* (diskio, read via `kern.devstat.all`). It isn't in the `libc` crate, so we define
   it ourselves and check `kern.devstat.version == 6` at startup. Reads are consistent when
   `sequence0 == sequence1`; otherwise we retry.
@@ -311,22 +310,23 @@ Dropped Telegraf agent options (they only matter for push outputs or don't apply
 . *Unit tests* for every parser and decoder: chrony float/packet decoding, DNS packet build/parse,
   Influx line protocol, `pfctl -s info`, `zpool list`, smartctl JSON (fixtures captured from real
   drives), devstat/xswdev struct layouts (`size_of` assertions against the C headers).
-. *Cross-check*: `cargo clippy --target x86_64-unknown-freebsd` in CI and locally. This needs
-  `rustup target add x86_64-unknown-freebsd`, which isn't installed yet.
-. *FreeBSD VM*: qemu/KVM is available here. I'd boot an official FreeBSD 14.x VM image, build natively
-  inside it (or copy over a cross-built binary), and compare our output against `sysctl`,
-  `vmstat`, `iostat -x`, `swapinfo`, `netstat -i`, `pfctl -s info`, `ps`, and against Telegraf itself
-  (installed in the VM from `pkg`) using the same config. ZFS root, pf enabled, and chrony from pkg
-  give us all the inputs except real SMART data.
+. *Cross-check*: `cargo clippy --target x86_64-unknown-freebsd` locally (no linker needed).
+. *FreeBSD VM*: a FreeBSD 15.1 Firecracker microVM from
+  https://github.com/acj/freebsd-firecracker[acj/freebsd-firecracker] (v0.12.0), see
+  `resources/firecracker/`. `scripts/vm.sh start|stop|ssh|reset` manages it; binaries are
+  cross-compiled on the host with `scripts/cross-build.sh` and copied over with scp. We compare our
+  output against `sysctl`, `vmstat`, `iostat -x`, `swapinfo`, `netstat -i`, `pfctl -s info`, `ps`, and
+  against Telegraf itself (installed from `pkg`) using the same config. The rootfs is UFS, so ZFS is
+  tested with a file-backed pool; pf and chrony come from base/pkg. Real SMART data is the only gap.
 . *Resource check*: compare RSS and CPU time against Telegraf in the VM over 1 hour.
 . *Final check on the server*: you run `calipers --once` and/or run it next to Telegraf on a different
   port. I won't touch the server myself.
 
 == Build and deployment
 
-* Cross-compiling for `x86_64-unknown-freebsd` needs a FreeBSD sysroot and linker, so the release
-  binary gets built *inside the FreeBSD VM* (or with `cross`). *[decide]*: build on the server itself
-  with `cargo build --release` (simplest), or build here and copy the binary over?
+* Cross-compiling works with clang + lld and the official `base.txz` as sysroot
+  (`resources/firecracker/scripts/cross-build.sh build --release`). *[decide]*: deploy that binary,
+  or build on the server itself with `cargo build --release`?
 * Naming: crate `calipe-rs`; binary, service, config file and metric prefix are all `calipers`
   (`[[bin]] name = "calipers"` in `Cargo.toml`).
 * `resources/rc.d/calipers` script (daemon(8), `calipers_enable`, `calipers_config`).
@@ -335,7 +335,7 @@ Dropped Telegraf agent options (they only matter for push outputs or don't apply
 == Milestones
 
 . Skeleton: config, exporter, scheduler, internal metrics, `--once`, FreeBSD target check.
-. FreeBSD VM set up as the test bed.
+. FreeBSD 15.1 Firecracker VM set up as the test bed (done).
 . Sysctl collectors: cpu, mem, swap, system, kernel.
 . disk, diskio, net, netstat.
 . processes + procstat.

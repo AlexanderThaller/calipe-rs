@@ -1,0 +1,22 @@
+# Docker sets the FORWARD policy to DROP, which also drops the VM's forwarded
+# traffic. DOCKER-USER is Docker's supported chain for user rules.
+# Install: /etc/systemd/system/firecracker-forward.service
+#          systemctl enable --now firecracker-forward.service
+[Unit]
+Description=Allow forwarding for the firecracker tap0 network past Docker's FORWARD policy
+After=docker.service
+BindsTo=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Delete-then-insert keeps this idempotent across restarts.
+ExecStart=-/usr/bin/iptables -D DOCKER-USER -i tap0 -j ACCEPT
+ExecStart=-/usr/bin/iptables -D DOCKER-USER -o tap0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+ExecStart=/usr/bin/iptables -I DOCKER-USER 1 -i tap0 -j ACCEPT
+ExecStart=/usr/bin/iptables -I DOCKER-USER 1 -o tap0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+ExecStop=-/usr/bin/iptables -D DOCKER-USER -i tap0 -j ACCEPT
+ExecStop=-/usr/bin/iptables -D DOCKER-USER -o tap0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+[Install]
+WantedBy=docker.service

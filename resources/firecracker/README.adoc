@@ -1,0 +1,30 @@
+= FreeBSD test VM (Firecracker)
+
+calipers is tested on FreeBSD 15.1 using the images from
+https://github.com/acj/freebsd-firecracker[acj/freebsd-firecracker] (release v0.12.0).
+The guest has the fixed IP `172.16.0.2`; the host side of `tap0` is `172.16.0.1/24`.
+
+== Host setup (persistent, systemd-networkd)
+
+[source,sh]
+----
+sudo install -m 644 30-firecracker-tap0.netdev 30-firecracker-tap0.network /etc/systemd/network/
+sudo networkctl reload
+# Only needed when Docker is running (it sets the FORWARD policy to DROP):
+sudo install -m 644 firecracker-forward.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now firecracker-forward.service
+----
+
+Edit `User=` in the `.netdev` file first if firecracker runs as someone other than `athaller`.
+
+Check: `networkctl status tap0` shows `172.16.0.1/24`; state is `no-carrier` until the VM runs.
+
+== Host setup (one-off, until reboot)
+
+[source,sh]
+----
+sudo ./firecracker-host-setup.sh
+----
+
+Don't combine both: the script deletes and recreates `tap0`.

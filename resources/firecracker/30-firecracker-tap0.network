@@ -1,0 +1,17 @@
+# Host side of the freebsd-firecracker VM network.
+# The guest image has a fixed IP 172.16.0.2 (derived from MAC 06:00:AC:10:00:02).
+# Install: /etc/systemd/network/30-firecracker-tap0.network
+[Match]
+Name=tap0
+
+[Link]
+# The tap has no carrier until firecracker opens it; don't block network-online.
+RequiredForOnline=no
+
+[Network]
+Address=172.16.0.1/24
+ConfigureWithoutCarrier=yes
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+# NAT guest traffic out of the default route and enable forwarding.
+IPMasquerade=ipv4
