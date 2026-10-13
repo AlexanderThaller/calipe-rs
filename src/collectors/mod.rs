@@ -40,6 +40,7 @@ pub mod kernel;
 pub mod mem;
 pub mod net;
 pub mod netstat;
+pub mod pf;
 pub mod processes;
 pub mod swap;
 pub mod system;
@@ -124,6 +125,9 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
             http_response::HttpResponse::new(&config.inputs.http_response)?,
             default,
         ));
+    }
+    if let Some(c) = &config.inputs.pf {
+        out.push(Scheduled::new(pf::Pf::new(c)?, interval(c.interval)));
     }
     if let Some(c) = &config.inputs.internal {
         out.push(Scheduled::new(

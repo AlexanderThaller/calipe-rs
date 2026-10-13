@@ -90,6 +90,7 @@ pub struct Inputs {
     pub mem: Option<crate::collectors::mem::Config>,
     pub net: Option<crate::collectors::net::Config>,
     pub netstat: Option<crate::collectors::netstat::Config>,
+    pub pf: Option<crate::collectors::pf::Config>,
     pub processes: Option<crate::collectors::processes::ProcessesConfig>,
     #[serde(default)]
     pub procstat: Vec<crate::collectors::processes::ProcstatConfig>,

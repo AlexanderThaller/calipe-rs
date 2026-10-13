@@ -300,8 +300,14 @@ every 10s is wasteful, and SMART data changes slowly. *[decide]*: `path_nvme` (n
 since smartctl JSON already covers NVMe.
 
 |pf
-|`pfctl -s info` (parsed)
-|`pf_states`, `pf_state_{searches,inserts,removals}_total`, `pf_counter_total{reason}`
+|`DIOCGETSTATUSNV` ioctl on `/dev/pf` (read-only open, root), libnv nvlist decoded in `src/libnv.rs`.
+*No `pfctl`.* The only status interface on both 14.5 and 15.1: the fixed-struct `DIOCGETSTATUS` is
+gone in 15.x, and netlink `PFNL_CMD_GET_STATUS` only exists in 15.x.
+|`pf_running`, `pf_states`, `pf_source_nodes`, `pf_state_operations_total{op}`,
+`pf_source_node_operations_total{op}`, `pf_counters_total{reason}`, `pf_limit_counters_total{limit}`
+(names come from the kernel, so new counters appear automatically), and with `set loginterface`:
+`pf_loginterface_{packets,bytes}_total{interface,family,direction[,action]}`. Matches
+`pfctl -s info -v`.
 
 |exec
 |Subprocess, parses Influx line protocol

@@ -34,6 +34,8 @@ ignore_fs = ["tmpfs", "devtmpfs"]
 
 [inputs.netstat]
 
+[inputs.pf]
+
 [inputs.processes]
 
 [[inputs.procstat]]

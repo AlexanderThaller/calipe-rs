@@ -2,6 +2,7 @@ mod collector;
 mod collectors;
 mod config;
 mod counter;
+mod libnv;
 mod nvlist;
 mod sys;
 
