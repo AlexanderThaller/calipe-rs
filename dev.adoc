@@ -78,6 +78,13 @@ forward as an offset so `rate()` stays correct across the reset.
 precomputed `usage_*` percentages.
 |Precomputed percentages throw away data between scrapes. `rate()` gives exact averages over any window.
 
+|Latencies
+|Histograms (`histogram!`) with one global set of bucket bounds, 10 µs to 10 s
+(`LATENCY_BUCKETS` in `main.rs`), for probe latencies and `calipers_collector_duration_seconds`.
+Setting buckets makes metrics-exporter-prometheus emit real histograms instead of summaries.
+|Histograms aggregate across series and hosts (`histogram_quantile`, `rate(_sum)/rate(_count)`);
+summary quantiles don't.
+
 |Units
 |Base units in names: `_bytes`, `_seconds`, `_celsius`. No milliseconds, no KiB, no pages.
 |Prometheus conventions.
@@ -264,8 +271,12 @@ last scrub/resilver: `zfs_pool_scan_info{pool,function,state}`,
 field. Matches `chronyc -c tracking`; config `server`, `timeout`.
 
 |dns_query
-|Hand-written UDP DNS client
-|`dns_query_duration_seconds`, `dns_query_rcode`, `dns_query_success{server,domain,record_type}`
+|Hand-written UDP DNS client (RFC 1035 query with RD; reply accepted only if ID, QR bit and echoed
+question match); all probes of all blocks run concurrently in one collector
+|`dns_query_duration_seconds{server,domain,record_type}` (histogram, replies only),
+`dns_query_total{...,result,rcode}` (result = success, rcode, timeout, error),
+`dns_query_success` (last probe got NOERROR), `dns_query_answers`. Config as in Telegraf: `servers`,
+`domains`, `record_type`, `port`, `timeout` (default 2s).
 
 |http_response
 |reqwest
@@ -290,7 +301,7 @@ since smartctl JSON already covers NVMe.
 
 |internal
 |Self
-|`calipers_collector_duration_seconds{collector}`, `calipers_collector_errors_total{collector}`,
+|`calipers_collector_duration_seconds{collector}` (histogram), `calipers_collector_errors_total{collector}`,
 `calipers_build_info{version}`, own RSS/CPU
 |===
 

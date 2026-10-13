@@ -33,6 +33,7 @@ pub mod chrony;
 pub mod cpu;
 pub mod disk;
 pub mod diskio;
+pub mod dns_query;
 pub mod internal;
 pub mod kernel;
 pub mod mem;
@@ -109,6 +110,12 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
         out.push(Scheduled::new(
             processes::Processes::new(config.inputs.processes.is_some(), &config.inputs.procstat)?,
             interval(own),
+        ));
+    }
+    if !config.inputs.dns_query.is_empty() {
+        out.push(Scheduled::new(
+            dns_query::DnsQuery::new(&config.inputs.dns_query)?,
+            default,
         ));
     }
     if let Some(c) = &config.inputs.internal {

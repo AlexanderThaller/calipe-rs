@@ -31,6 +31,13 @@ struct Cli {
     once: bool,
 }
 
+/// Histogram bucket bounds in seconds for all latencies: from collector
+/// runtimes (microseconds) to network probes (up to the usual timeouts).
+const LATENCY_BUCKETS: [f64; 19] = [
+    0.000_01, 0.000_025, 0.000_05, 0.000_1, 0.000_25, 0.000_5, 0.001, 0.002_5, 0.005, 0.01, 0.025,
+    0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+
 /// Series not updated for this many times the longest collector interval are
 /// dropped, so metrics of vanished processes, disks, etc. disappear.
 const IDLE_TIMEOUT_INTERVALS: u32 = 3;
@@ -59,7 +66,12 @@ fn main() -> Result<()> {
 async fn run(config: Config, once: bool) -> Result<()> {
     let scheduled = collectors::build(&config)?;
 
-    let mut builder = PrometheusBuilder::new().with_recommended_naming(true);
+    let mut builder = PrometheusBuilder::new()
+        .with_recommended_naming(true)
+        // Explicit buckets make histograms real Prometheus histograms
+        // (aggregatable) instead of summaries.
+        .set_buckets(&LATENCY_BUCKETS)
+        .context("configuring histogram buckets")?;
     for (key, value) in &config.global_tags {
         builder = builder.add_global_label(key, value);
     }

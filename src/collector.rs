@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use metrics::{counter, describe_counter, describe_gauge, gauge};
+use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 use tokio::time::{MissedTickBehavior, interval_at, timeout};
 
 /// A source of metrics. `collect` updates metrics-rs handles directly.
@@ -79,8 +79,8 @@ impl Scheduled {
             Ok(result) => result,
             Err(_) => Err(anyhow::anyhow!("timed out after {:?}", self.interval)),
         };
-        gauge!("calipers_collector_duration_seconds", "collector" => name)
-            .set(start.elapsed().as_secs_f64());
+        histogram!("calipers_collector_duration_seconds", "collector" => name)
+            .record(start.elapsed().as_secs_f64());
 
         let errors = counter!("calipers_collector_errors_total", "collector" => name);
         match result {
@@ -125,9 +125,9 @@ impl Scheduled {
 }
 
 pub fn describe() {
-    describe_gauge!(
+    describe_histogram!(
         "calipers_collector_duration_seconds",
-        "Wall-clock duration of the last collection."
+        "Wall-clock duration of collections."
     );
     describe_counter!(
         "calipers_collector_errors_total",

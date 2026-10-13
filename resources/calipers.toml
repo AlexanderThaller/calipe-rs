@@ -71,4 +71,14 @@ tag_with = ["pid"]
 # pools = true
 # vdevs = true
 
+[[inputs.dns_query]]
+domains = ["ip.thaller.ws"]
+record_type = "A"
+servers = ["1.0.0.1", "1.1.1.1", "8.8.4.4", "8.8.8.8"]
+
+[[inputs.dns_query]]
+domains = ["ip.thaller.ws"]
+record_type = "AAAA"
+servers = ["1.0.0.1", "1.1.1.1", "8.8.4.4", "8.8.8.8"]
+
 [inputs.internal]
