@@ -12,7 +12,7 @@ everything else is my proposed default.
 == Goals and non-goals
 
 .Goals
-* Cover every input in `resources/telegraf.conf` on FreeBSD (amd64; tested on 15.1, 13.x/14.x expected to work).
+* Cover every input in `resources/telegraf.conf` on FreeBSD (amd64; production runs 14.5, test VMs 15.1).
 * Pull-only: expose metrics over HTTP via https://github.com/metrics-rs/metrics[metrics-rs] +
   `metrics-exporter-prometheus`. No push outputs.
 * Use proper Prometheus semantics where Telegraf doesn't (real counters, base units, label names that
@@ -478,7 +478,7 @@ Dropped Telegraf agent options (they only matter for push outputs or don't apply
 . processes + procstat.
 . zfs.
 . Network collectors: chrony, dns_query, http_response.
-. Subprocess collectors: smart, pf, exec.
+. Native smart (CAM/NVMe) and pf (ioctl); exec dropped.
 . Comparison with Telegraf in the VM, resource measurements, rc.d script, README.
 
 Each milestone gets its own commit (or its own PR, if you prefer reviewing that way).
@@ -486,6 +486,5 @@ Each milestone gets its own commit (or its own PR, if you prefer reviewing that 
 == Open questions (summary)
 
 . Build location: on the server, or cross-built here (VM)?
-. Which FreeBSD version is the server running (13.x or 14.x)?
 . Are you OK with breaking metric names compared to Telegraf (are there Grafana dashboards that would
   need updating)?
