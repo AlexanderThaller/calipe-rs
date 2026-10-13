@@ -141,6 +141,19 @@ impl Mib {
         }
     }
 
+    /// Fills `buf` with the first bytes of a (possibly larger) value and
+    /// returns how many were written. sysctl(3) copies as much as fits and
+    /// reports `ENOMEM` for the rest, which is not an error here.
+    pub fn read_prefix(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut len = buf.len();
+        // SAFETY: `buf` is valid for `len` bytes.
+        match unsafe { self.raw(buf.as_mut_ptr().cast(), &mut len) } {
+            Ok(()) => Ok(len),
+            Err(err) if err.raw_os_error() == Some(libc::ENOMEM) => Ok(buf.len()),
+            Err(err) => Err(err),
+        }
+    }
+
     /// Reads a fixed-size value. Fails if the kernel's size differs from
     /// `size_of::<T>()`, which catches ABI mismatches instead of misreading.
     pub fn read<T: Plain>(&self) -> io::Result<T> {

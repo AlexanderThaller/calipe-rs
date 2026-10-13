@@ -29,6 +29,8 @@ ignore_fs = ["tmpfs", "devtmpfs"]
 [inputs.net]
 # interfaces = ["igb0", "tailscale*"]   # default: all up, non-loopback
 
+[inputs.netstat]
+
 [inputs.swap]
 
 [inputs.system]

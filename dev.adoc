@@ -216,9 +216,12 @@ filter. Matches `iostat -I -x`.
 Telegraf); `interfaces` takes globs. Matches `netstat -ibdn`.
 
 |netstat
-|`net.inet.tcp.states`, `xig_count` header of `net.inet.udp.pcblist`
-|`netstat_tcp_connections{state}`, `netstat_udp_sockets`. Telegraf's gopsutil connection listing is
-probably not implemented on FreeBSD (to be checked), so this may also be new data.
+|`net.inet.tcp.states` (kernel-maintained `uint64[11]` per-state counts, IPv4 + IPv6) and the 64-byte
+`xinpgen` header of `net.inet.udp.pcblist` (read alone; the kernel stops with `ENOMEM` before copying
+any socket)
+|`netstat_tcp_connections{state}` (netstat(1) names: LISTEN, ESTABLISHED, TIME_WAIT, ...; all 11 states
+always present), `netstat_udp_sockets`. No socket list walk, unlike Telegraf. Matches `netstat -an` and
+`sockstat`.
 
 |processes + procstat
 |One `kern.proc.proc` read per interval, shared by both

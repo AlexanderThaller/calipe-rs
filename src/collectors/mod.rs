@@ -36,6 +36,7 @@ pub mod internal;
 pub mod kernel;
 pub mod mem;
 pub mod net;
+pub mod netstat;
 pub mod swap;
 pub mod system;
 pub mod zfs;
@@ -87,6 +88,12 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
     }
     if let Some(c) = &config.inputs.net {
         out.push(Scheduled::new(net::Net::new(c)?, interval(c.interval)));
+    }
+    if let Some(c) = &config.inputs.netstat {
+        out.push(Scheduled::new(
+            netstat::Netstat::new(c)?,
+            interval(c.interval),
+        ));
     }
     if let Some(c) = &config.inputs.internal {
         out.push(Scheduled::new(
