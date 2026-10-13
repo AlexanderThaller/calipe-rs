@@ -107,9 +107,9 @@ pub fn describe() {
         "zfs_vdev_state",
         "1 for the vdev's current state, 0 for the others."
     );
-    describe_counter!(
-        "zfs_vdev_errors_total",
-        "Read, write and checksum errors, as in zpool status; reset by zpool clear."
+    describe_gauge!(
+        "zfs_vdev_errors",
+        "Read, write and checksum error counts, as in zpool status; reset by zpool clear."
     );
 }
 
@@ -378,6 +378,7 @@ mod freebsd {
 
     use super::{Config, Kind, STATES, ZIO_TYPES, describe, kstat_kind, pool_props, scan, vdevs};
     use crate::collector::Collector;
+    use crate::counter::Monotonic;
     use crate::nvlist::{self, Value};
     use crate::sys::freebsd::{Mib, walk};
 
@@ -525,6 +526,7 @@ mod freebsd {
         generation: u64,
         pools: Vec<String>,
         states: HashMap<String, Mib>,
+        counters: Monotonic,
     }
 
     impl Zfs {
@@ -577,6 +579,7 @@ mod freebsd {
                 generation: 0,
                 pools: Vec::new(),
                 states: HashMap::new(),
+                counters: Monotonic::default(),
             })
         }
 
@@ -668,11 +671,18 @@ mod freebsd {
             };
             let vdevs = vdevs(pool, tree);
             if let Some(root) = vdevs.first() {
+                // Re-importing a pool resets its vdev stats.
                 for (i, typ) in ZIO_TYPES.iter().enumerate().skip(1) {
+                    let ops = self
+                        .counters
+                        .correct(&format!("ops\0{pool}\0{typ}"), root.ops[i]);
+                    let bytes = self
+                        .counters
+                        .correct(&format!("bytes\0{pool}\0{typ}"), root.bytes[i]);
                     counter!("zfs_pool_ops_total", "pool" => pool.to_owned(), "type" => *typ)
-                        .absolute(root.ops[i]);
+                        .absolute(ops);
                     counter!("zfs_pool_bytes_total", "pool" => pool.to_owned(), "type" => *typ)
-                        .absolute(root.bytes[i]);
+                        .absolute(bytes);
                 }
             }
             if self.vdevs {
@@ -682,8 +692,8 @@ mod freebsd {
                             .set(f64::from(u8::from(*s == vdev.state)));
                     }
                     for (typ, count) in vdev.errors {
-                        counter!("zfs_vdev_errors_total", "pool" => pool.to_owned(), "vdev" => vdev.name.clone(), "type" => typ)
-                            .absolute(count);
+                        gauge!("zfs_vdev_errors", "pool" => pool.to_owned(), "vdev" => vdev.name.clone(), "type" => typ)
+                            .set(count as f64);
                     }
                 }
             }
@@ -727,6 +737,7 @@ mod freebsd {
                     first_error.get_or_insert(err);
                 }
             }
+            self.counters.prune();
             first_error.map_or(Ok(()), Err)
         }
     }

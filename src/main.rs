@@ -1,6 +1,7 @@
 mod collector;
 mod collectors;
 mod config;
+mod counter;
 mod nvlist;
 mod sys;
 

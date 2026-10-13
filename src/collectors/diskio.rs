@@ -169,12 +169,14 @@ mod freebsd {
 
     use super::{Config, DEVSTAT_VERSION, TYPES, describe, parse};
     use crate::collector::Collector;
+    use crate::counter::Monotonic;
     use crate::sys::freebsd::Mib;
 
     pub struct DiskIo {
         config: Config,
         all: Mib,
         buf: Vec<u8>,
+        counters: Monotonic,
     }
 
     impl DiskIo {
@@ -189,6 +191,7 @@ mod freebsd {
                 config: config.clone(),
                 all: Mib::new("kern.devstat.all")?,
                 buf: Vec::new(),
+                counters: Monotonic::default(),
             })
         }
     }
@@ -234,17 +237,24 @@ mod freebsd {
                 }
                 for (i, typ) in TYPES.iter().enumerate() {
                     let labels = [("device", dev.name.clone()), ("type", (*typ).to_owned())];
-                    counter!("diskio_operations_total", &labels).absolute(dev.operations[i]);
+                    let ops = self
+                        .counters
+                        .correct(&format!("ops\0{}\0{typ}", dev.name), dev.operations[i]);
+                    counter!("diskio_operations_total", &labels).absolute(ops);
                     gauge!("diskio_time_seconds_total", &labels).set(dev.duration[i]);
                     // NO_DATA requests transfer nothing.
                     if i != 0 {
-                        counter!("diskio_bytes_total", &labels).absolute(dev.bytes[i]);
+                        let bytes = self
+                            .counters
+                            .correct(&format!("bytes\0{}\0{typ}", dev.name), dev.bytes[i]);
+                        counter!("diskio_bytes_total", &labels).absolute(bytes);
                     }
                 }
                 gauge!("diskio_busy_seconds_total", "device" => dev.name.clone())
                     .set(dev.busy_seconds(now));
                 gauge!("diskio_in_progress", "device" => dev.name).set(f64::from(dev.in_progress));
             }
+            self.counters.prune();
             Ok(())
         }
     }

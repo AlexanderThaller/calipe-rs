@@ -68,6 +68,10 @@ suffix). Telegraf exports everything as gauges/untyped.
 |Makes `rate()` correct and lets Prometheus handle counter resets. metrics-rs counters are `u64`, so
 cumulative values with fractional seconds (CPU time, I/O time) are exported as gauges that keep the
 `_total` name. PromQL's `rate()` works the same on them; only the `# TYPE` line differs.
+metrics-rs implements `Counter::absolute` as `fetch_max`, so an exported counter can't decrease.
+Per-object counters that reset while calipers runs (recreated interfaces, re-attached disks,
+re-imported pools, reused PIDs) go through `counter::Monotonic`, which carries the previous total
+forward as an offset so `rate()` stays correct across the reset.
 
 |CPU usage
 |Export raw `cpu_seconds_total{cpu,mode}` (ticks / `kern.clockrate` stathz) instead of Telegraf's
@@ -240,7 +244,7 @@ restart. Keep `pid`, or aggregate per query (sum over matching processes) by def
 |`zfs_<kstat>_<field>` (event counts as counters with `_total`, everything else gauges),
 `zfs_pool_{size,allocated,free,freeing}_bytes`, `zfs_pool_fragmentation_ratio`, `zfs_pool_dedup_ratio`,
 `zfs_pool_health{pool,state}` (0/1 for every state), `zfs_pool_{ops,bytes}_total{pool,type}`,
-`zfs_vdev_state{pool,vdev,state}`, `zfs_vdev_errors_total{pool,vdev,type=read\|write\|checksum}`,
+`zfs_vdev_state{pool,vdev,state}`, `zfs_vdev_errors{pool,vdev,type=read\|write\|checksum}` (gauge: current count, reset by `zpool clear`),
 last scrub/resilver: `zfs_pool_scan_info{pool,function,state}`,
 `zfs_pool_scan_{start,end}_time_seconds`, `zfs_pool_scan_{to_examine,issued}_bytes`,
 `zfs_pool_scan_errors`. Config: `kstats`, `pools`, `vdevs` (replaces Telegraf's `poolMetrics`).

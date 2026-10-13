@@ -235,6 +235,7 @@ mod freebsd {
 
     use super::{Config, describe, parse};
     use crate::collector::Collector;
+    use crate::counter::Monotonic;
     use crate::sys::freebsd::Mib;
 
     /// `NET_RT_IFLISTL` from `sys/socket.h`.
@@ -244,6 +245,7 @@ mod freebsd {
         config: Config,
         iflist: Mib,
         buf: Vec<u8>,
+        counters: Monotonic,
     }
 
     impl Net {
@@ -252,6 +254,7 @@ mod freebsd {
                 config: config.clone(),
                 iflist: Mib::from_raw(&[libc::CTL_NET, libc::PF_ROUTE, 0, 0, NET_RT_IFLISTL, 0]),
                 buf: Vec::new(),
+                counters: Monotonic::default(),
             })
         }
     }
@@ -271,7 +274,12 @@ mod freebsd {
                 .context("reading interface list")?;
             let interfaces = parse(&self.buf).map_err(|e| anyhow!("NET_RT_IFLISTL: {e}"))?;
             for iface in interfaces.into_iter().filter(|i| self.config.wants(i)) {
+                // Recreated interfaces (tun, epair, tailscale restarts) start
+                // from zero again.
                 for (metric, value) in iface.counters {
+                    let value = self
+                        .counters
+                        .correct(&format!("{metric}\0{}", iface.name), value);
                     counter!(metric, "interface" => iface.name.clone()).absolute(value);
                 }
                 if let Some(up) = iface.link_up {
@@ -283,6 +291,7 @@ mod freebsd {
                         .set(iface.baudrate as f64);
                 }
             }
+            self.counters.prune();
             Ok(())
         }
     }
