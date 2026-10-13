@@ -162,6 +162,28 @@ impl Mib {
     }
 }
 
+/// A sysctl resolved at startup by name and read as an unsigned integer, with
+/// the name in error messages.
+pub struct Uint {
+    name: &'static str,
+    mib: Mib,
+}
+
+impl Uint {
+    pub fn new(name: &'static str) -> io::Result<Self> {
+        Ok(Self {
+            name,
+            mib: Mib::new(name)?,
+        })
+    }
+
+    pub fn read(&self) -> io::Result<u64> {
+        self.mib
+            .read_uint()
+            .map_err(|err| io::Error::new(err.kind(), format!("reading {}: {err}", self.name)))
+    }
+}
+
 /// Reinterprets a byte buffer as a slice of `T` (e.g. `kern.cp_times`).
 /// Fails if the length isn't a multiple of `size_of::<T>()`.
 pub fn cast_slice<T: Plain>(bytes: &[u8]) -> io::Result<Vec<T>> {

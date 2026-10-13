@@ -80,6 +80,7 @@ pub struct Inputs {
     pub cpu: Option<crate::collectors::cpu::Config>,
     pub internal: Option<crate::collectors::internal::Config>,
     pub mem: Option<crate::collectors::mem::Config>,
+    pub swap: Option<crate::collectors::swap::Config>,
 }
 
 impl Config {

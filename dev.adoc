@@ -174,8 +174,9 @@ temperature/frequency? If so, the native option replaces it.
 derive them in PromQL.
 
 |swap
-|`vm.swap_info.N`, `vm.stats.vm.v_swappgs{in,out}`
-|`swap_{total,used,free}_bytes{device}`, `swap_{in,out}_bytes_total`
+|`vm.swap_info.N` (`struct xswdev` v2), `vm.stats.vm.v_swappgs{in,out}`
+|`swap_{total,used}_bytes{device}` (free = total - used in PromQL), `swap_{in,out}_bytes_total` as
+real counters. Values match `swapinfo -k` and `sysctl` exactly.
 
 |system
 |`vm.loadavg`, `kern.boottime`, `hw.ncpu`, utmpx

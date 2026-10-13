@@ -22,7 +22,7 @@
 
 use std::time::Duration;
 
-use metrics::describe_gauge;
+use metrics::{describe_counter, describe_gauge};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -57,13 +57,13 @@ pub fn describe() {
         "mem_free_target_bytes",
         "Free memory the page daemon tries to maintain; free below this means memory pressure."
     );
-    describe_gauge!(
+    describe_counter!(
         "mem_pagedaemon_wakeups_total",
-        "Times the page daemon woke up to reclaim memory. Cumulative; use rate()."
+        "Times the page daemon woke up to reclaim memory."
     );
-    describe_gauge!(
+    describe_counter!(
         "mem_pagedaemon_scanned_pages_total",
-        "Pages scanned by the page daemon. Cumulative; use rate()."
+        "Pages scanned by the page daemon."
     );
 }
 
@@ -110,33 +110,12 @@ pub use freebsd::Mem;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use anyhow::{Context, Result};
-    use metrics::gauge;
+    use anyhow::Result;
+    use metrics::{counter, gauge};
 
     use super::{Config, Snapshot, describe};
     use crate::collector::Collector;
-    use crate::sys::freebsd::Mib;
-
-    /// A sysctl resolved at startup, read as an unsigned integer.
-    struct Uint {
-        name: &'static str,
-        mib: Mib,
-    }
-
-    impl Uint {
-        fn new(name: &'static str) -> Result<Self> {
-            Ok(Self {
-                name,
-                mib: Mib::new(name)?,
-            })
-        }
-
-        fn read(&self) -> Result<u64> {
-            self.mib
-                .read_uint()
-                .with_context(|| format!("reading {}", self.name))
-        }
-    }
+    use crate::sys::freebsd::Uint;
 
     struct Arc {
         size: Uint,
@@ -235,8 +214,8 @@ mod freebsd {
                 gauge!("mem_zfs_arc_min_bytes").set(min as f64);
             }
             gauge!("mem_free_target_bytes").set(self.free_target.read()? as f64 * page);
-            gauge!("mem_pagedaemon_wakeups_total").set(self.pdwakeups.read()? as f64);
-            gauge!("mem_pagedaemon_scanned_pages_total").set(self.pdpages.read()? as f64);
+            counter!("mem_pagedaemon_wakeups_total").absolute(self.pdwakeups.read()?);
+            counter!("mem_pagedaemon_scanned_pages_total").absolute(self.pdpages.read()?);
             Ok(())
         }
     }
