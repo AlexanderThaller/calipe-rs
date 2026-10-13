@@ -92,6 +92,7 @@ pub struct Inputs {
     pub netstat: Option<crate::collectors::netstat::Config>,
     pub pf: Option<crate::collectors::pf::Config>,
     pub processes: Option<crate::collectors::processes::ProcessesConfig>,
+    pub smart: Option<crate::collectors::smart::Config>,
     #[serde(default)]
     pub procstat: Vec<crate::collectors::processes::ProcstatConfig>,
     pub swap: Option<crate::collectors::swap::Config>,

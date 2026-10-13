@@ -42,6 +42,7 @@ pub mod net;
 pub mod netstat;
 pub mod pf;
 pub mod processes;
+pub mod smart;
 pub mod swap;
 pub mod system;
 pub mod zfs;
@@ -128,6 +129,12 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
     }
     if let Some(c) = &config.inputs.pf {
         out.push(Scheduled::new(pf::Pf::new(c)?, interval(c.interval)));
+    }
+    if let Some(c) = &config.inputs.smart {
+        out.push(Scheduled::new(
+            smart::Smart::new(c)?,
+            c.interval.unwrap_or(smart::DEFAULT_INTERVAL),
+        ));
     }
     if let Some(c) = &config.inputs.internal {
         out.push(Scheduled::new(

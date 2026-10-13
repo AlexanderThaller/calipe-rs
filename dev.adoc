@@ -292,12 +292,18 @@ keys as in Telegraf: `urls`, `method`, `response_timeout` (5s), `follow_redirect
 Telegraf for all eight URLs.
 
 |smart
-|`smartctl --scan -j`, then `smartctl -j -a -n standby <dev>` for each device
-|`smart_device_healthy`, `smart_temperature_celsius`, `smart_power_on_seconds`,
-`smart_power_cycles_total`, `smart_attribute_{value,worst,threshold,raw}{id,name}`, NVMe health-log fields.
-Drives in standby are skipped (`nocheck = standby`). Default interval *60s*, not 10s: running smartctl
-every 10s is wasteful, and SMART data changes slowly. *[decide]*: `path_nvme` (nvmecontrol) gets dropped,
-since smartctl JSON already covers NVMe.
+|Native, no smartctl: SATA via libcam (`cam_open_device` + `XPT_ATA_IO` CCB: IDENTIFY, CHECK POWER
+MODE, SMART RETURN STATUS / READ DATA / READ THRESHOLDS), NVMe via `NVME_PASSTHROUGH_CMD` (IDENTIFY,
+health log 0x02). `union ccb` / `nvme_pt_command` offsets computed with clang `offsetof` from the 14.5
+and 15.1 headers (identical). Considered: the `smartmon` crate (GPL-2.0+, C++, no SMART API yet) and
+`hdd` (unmaintained since 2020).
+|`smart_device_info{device,type,model,serial,firmware}`, `smart_device_healthy`, `smart_device_standby`,
+`smart_temperature_celsius`, `smart_power_on_seconds`, `smart_power_cycles`; SATA attribute table
+`smart_attribute_{value,worst,threshold,raw}{device,id,name}`; NVMe `smart_nvme_*` (critical warning,
+spare, percentage used, bytes/commands read/written, busy time, unsafe shutdowns, media errors, error
+log entries, warning/critical temperature time). All gauges (device lifetime state). Default interval
+60s. `nocheck = "standby"` skips SATA disks in standby without waking them. Matches smartctl on
+QEMU-emulated AHCI and NVMe drives.
 
 |pf
 |`DIOCGETSTATUSNV` ioctl on `/dev/pf` (read-only open, root), libnv nvlist decoded in `src/libnv.rs`.
@@ -310,8 +316,8 @@ gone in 15.x, and netlink `PFNL_CMD_GET_STATUS` only exists in 15.x.
 `pfctl -s info -v`.
 
 |exec
-|Subprocess, parses Influx line protocol
-|`<measurement>_<field>{tags}` as gauges. Strings are skipped, bools become 0/1.
+|Dropped
+|The only exec user was `freebsd_cpu`, which is no longer needed (cpu temperature/frequency are native).
 
 |internal
 |Self
@@ -479,8 +485,6 @@ Each milestone gets its own commit (or its own PR, if you prefer reviewing that 
 
 == Open questions (summary)
 
-. What does `/root/src/priv/scripts/freebsd_cpu` output? Can native CPU temperature/frequency replace it?
-. smart: is a 60s default interval OK? Can we drop `path_nvme`?
 . Build location: on the server, or cross-built here (VM)?
 . Which FreeBSD version is the server running (13.x or 14.x)?
 . Are you OK with breaking metric names compared to Telegraf (are there Grafana dashboards that would

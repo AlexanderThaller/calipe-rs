@@ -19,6 +19,9 @@ VCPUS="${QEMU_VCPUS:-4}"
 MEM_MIB="${QEMU_MEM_MIB:-4096}"
 SSH_PORT="${QEMU_SSH_PORT:-2222}"
 METRICS_PORT="${QEMU_METRICS_PORT:-9275}"
+# Extra emulated disks for SMART tests: an AHCI SATA disk (ada) and an NVMe
+# controller (nvme/nda), both answering SMART/health-log commands.
+SMART_DISKS="${QEMU_SMART_DISKS:-1}"
 
 SSH_OPTS=(-i "$STATE/id_ed25519" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
           -o LogLevel=ERROR -o ConnectTimeout=3)
@@ -35,6 +38,10 @@ prepare() {
     if [[ ! -e "$STATE/overlay.qcow2" ]]; then
         # Copy-on-write overlay: reset just deletes it.
         qemu-img create -q -f qcow2 -b "$STATE/$IMAGE" -F qcow2 "$STATE/overlay.qcow2" 20G
+    fi
+    if [[ "$SMART_DISKS" == 1 ]]; then
+        [[ -e "$STATE/sata.img" ]] || qemu-img create -q -f raw "$STATE/sata.img" 1G
+        [[ -e "$STATE/nvme.img" ]] || qemu-img create -q -f raw "$STATE/nvme.img" 1G
     fi
     if [[ ! -e "$STATE/seed.iso" ]]; then
         local seed="$STATE/seed"
@@ -63,8 +70,17 @@ vm_ssh() {
 start() {
     if running; then echo "already running"; return; fi
     prepare
-    qemu-system-x86_64 -enable-kvm -cpu host -smp "$VCPUS" -m "$MEM_MIB" \
-        -drive file="$STATE/overlay.qcow2",if=virtio,format=qcow2 \
+    local extra=()
+    if [[ "$SMART_DISKS" == 1 ]]; then
+        extra+=(-device ahci,id=ahci
+                -drive "id=sata,file=$STATE/sata.img,if=none,format=raw"
+                -device ide-hd,drive=sata,bus=ahci.0,model=CALIPERS-SATA-TEST,serial=SATA0001
+                -drive "id=nvm,file=$STATE/nvme.img,if=none,format=raw"
+                -device nvme,drive=nvm,serial=NVME0001)
+    fi
+    qemu-system-x86_64 -enable-kvm -cpu host -smp "$VCPUS" -m "$MEM_MIB" "${extra[@]}" \
+        -drive id=root,file="$STATE/overlay.qcow2",if=none,format=qcow2 \
+        -device virtio-blk-pci,drive=root,bootindex=0 \
         -drive file="$STATE/seed.iso",media=cdrom \
         -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22,hostfwd=tcp:127.0.0.1:$METRICS_PORT-:9273" \
         -display none -serial "file:$STATE/console.log" \

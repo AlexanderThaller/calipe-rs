@@ -62,6 +62,11 @@ tag_with = ["pid"]
 exe = "calipers"
 tag_with = ["pid"]
 
+[inputs.smart]
+# interval = "60s"        # default
+excludes = ["/dev/ses0"]
+nocheck = "standby"
+
 [inputs.swap]
 
 [inputs.system]
