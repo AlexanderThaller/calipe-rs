@@ -79,7 +79,10 @@ fn kelvin_to_celsius(raw: i32, format: &str) -> Option<f64> {
         "" => 1,
         digits => digits.parse::<i32>().ok().filter(|p| (0..=9).contains(p))?,
     };
-    Some(f64::from(raw) / 10f64.powi(precision) - 273.15)
+    // Subtract before dividing: `3437 / 10 - 273.15` gives 70.55000000000001,
+    // `(3437 - 2731.5) / 10` gives 70.55.
+    let scale = 10f64.powi(precision);
+    Some((f64::from(raw) - 273.15 * scale) / scale)
 }
 
 fn export_modes(name: &'static str, cpu: Option<&str>, seconds: &[f64; MODES.len()]) {
@@ -295,6 +298,7 @@ mod tests {
     fn converts_kelvin_formats() {
         let close = |a: Option<f64>, b: f64| (a.unwrap() - b).abs() < 1e-9;
         assert!(close(kelvin_to_celsius(3231, "IK"), 49.95));
+        assert_eq!(kelvin_to_celsius(3437, "IK").unwrap().to_string(), "70.55");
         assert!(close(kelvin_to_celsius(3231, "IK1"), 49.95));
         assert!(close(kelvin_to_celsius(323_150, "IK3"), 50.0));
         assert!(close(kelvin_to_celsius(323, "IK0"), 49.85));
