@@ -28,6 +28,16 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+[profile.deploy]
+inherits = "release"
+opt-level = 3
+debug = false
+strip = "none"
+lto = true
+codegen-units = 1
+incremental = false
+panic = "abort"
+
 [dev-dependencies]
 tokio = { version = "1.53.2", features = ["test-util", "macros", "rt"] }
 
