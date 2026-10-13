@@ -25,4 +25,6 @@ totalcpu = true
 
 [inputs.system]
 
+[inputs.kernel]
+
 [inputs.internal]

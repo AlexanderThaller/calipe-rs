@@ -184,10 +184,10 @@ real counters. Values match `swapinfo -k` and `sysctl` exactly.
 `system_cpus`, `system_users` (sessions), `system_unique_users`
 
 |kernel
-|`vm.stats.sys.v_{swtch,intr,soft,syscall,trap}`, `vm.stats.vm.v_{forks,vforks,rforks}`
+|`vm.stats.sys.v_{swtch,intr,soft,syscall,trap}`, `vm.stats.vm.v_{forks,vforks,rforks,kthreads}`
 |`kernel_context_switches_total`, `kernel_interrupts_total{type=hard\|soft}`, `kernel_syscalls_total`,
-`kernel_forks_total`. Note: Telegraf's `inputs.kernel` is *Linux-only*, so this input currently produces
-nothing on the server. This adds data you didn't have before.
+`kernel_traps_total`, `kernel_forks_total{type=fork\|vfork\|rfork\|kthread}`, all real counters.
+Telegraf's `inputs.kernel` is *Linux-only*, so on FreeBSD this is new data.
 
 |disk
 |`getfsstat(MNT_NOWAIT)` + `statfs`

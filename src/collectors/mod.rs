@@ -31,6 +31,7 @@ macro_rules! freebsd_only {
 
 pub mod cpu;
 pub mod internal;
+pub mod kernel;
 pub mod mem;
 pub mod swap;
 pub mod system;
@@ -59,6 +60,12 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
     if let Some(c) = &config.inputs.system {
         out.push(Scheduled::new(
             system::System::new(c)?,
+            interval(c.interval),
+        ));
+    }
+    if let Some(c) = &config.inputs.kernel {
+        out.push(Scheduled::new(
+            kernel::Kernel::new(c)?,
             interval(c.interval),
         ));
     }
