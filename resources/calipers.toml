@@ -19,4 +19,6 @@ totalcpu = true
 # temperature = true   # needs coretemp(4)/amdtemp(4)
 # frequency = true     # needs cpufreq(4)
 
+[inputs.mem]
+
 [inputs.internal]

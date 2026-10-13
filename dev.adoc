@@ -166,9 +166,12 @@ system, interrupt, idle. Opt-in `cpu_temperature_celsius{cpu}`,
 temperature/frequency? If so, the native option replaces it.
 
 |mem
-|`vm.stats.vm.v_*_count`, `hw.pagesize`, `hw.physmem`, `vfs.bufspace`
-|`mem_{total,free,active,inactive,wired,laundry,buffer,available,used}_bytes`. `available` is defined
-the way gopsutil does it (inactive + laundry + free), so values match what Telegraf reported.
+|`vm.stats.vm.v_*_count`, `hw.pagesize`, `hw.physmem`, `vfs.bufspace`, `kstat.zfs.misc.arcstats.{size,c_min}`
+|See <<memory-model>>. `mem_bytes{state}` (active, inactive, laundry, wired, free, other; sums to
+`mem_managed_bytes`), `mem_physical_bytes`, `mem_available_bytes`, wired breakdown
+`mem_{buffer,user_wired,zfs_arc}_bytes`, `mem_zfs_arc_min_bytes`, pressure signals
+`mem_free_target_bytes`, `mem_pagedaemon_{wakeups,scanned_pages}_total`. No `used`/`used_percent`:
+derive them in PromQL.
 
 |swap
 |`vm.swap_info.N`, `vm.stats.vm.v_swappgs{in,out}`
@@ -259,6 +262,47 @@ since smartctl JSON already covers NVMe.
 |`calipers_collector_duration_seconds{collector}`, `calipers_collector_errors_total{collector}`,
 `calipers_build_info{version}`, own RSS/CPU
 |===
+
+[[memory-model]]
+== Memory model
+
+Linux and FreeBSD account for memory differently, and Telegraf (through gopsutil) reports FreeBSD
+memory in a Linux-shaped way that is misleading on ZFS systems. calipers exports FreeBSD's own model.
+
+[cols="1,2,2"]
+|===
+|FreeBSD |Meaning |Closest Linux concept
+
+|active |Recently used pages |`Active`
+|inactive |Not recently used; clean ones are reclaimed directly, dirty ones go to laundry |`Inactive`
+|laundry |Dirty pages waiting to be written to swap or files before reuse |`Dirty` + anon pages headed for swap
+|wired |Can't be paged out: kernel memory, ZFS ARC, UFS buffers, `mlock` |Slab + kernel stacks + `Mlocked` (+ page cache, for the ARC part)
+|free |Immediately usable |`MemFree`
+|ZFS ARC |Filesystem cache, *inside wired*; shrinks under pressure down to `c_min` |Page cache (`Cached`)
+|===
+
+Key differences:
+
+* On Linux the filesystem cache is ordinary reclaimable page cache. On FreeBSD with ZFS it's the ARC,
+  which is *wired* kernel memory. Telegraf's `used = total - (free + inactive + laundry)` therefore
+  counts the whole ARC as used, and a healthy ZFS box looks permanently out of memory.
+* `mem_available_bytes` = free + inactive + (ARC size - ARC `c_min`). Laundry is left out because
+  reclaiming it needs swap I/O, the same reason Linux's `MemAvailable` leaves out anonymous memory.
+  This is an estimate, like `MemAvailable`: some inactive pages are dirty, and some ARC is pinned.
+* The real signal for memory pressure on FreeBSD is the page daemon: `free` dropping below
+  `mem_free_target_bytes`, and `rate(mem_pagedaemon_scanned_pages_total[5m])` going up.
+
+Useful queries:
+
+[source,promql]
+----
+# Used, Linux-style (ARC counted as cache, not as used)
+mem_managed_bytes - mem_available_bytes
+# Stacked breakdown of all managed memory
+mem_bytes
+# Wired memory that isn't the ARC (kernel, mlock, UFS buffers)
+mem_bytes{state="wired"} - ignoring(state) mem_zfs_arc_bytes
+----
 
 == Config
 

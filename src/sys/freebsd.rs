@@ -141,6 +141,27 @@ impl Mib {
     }
 }
 
+impl Mib {
+    /// Reads an unsigned integer that may be 32- or 64-bit depending on the
+    /// sysctl (e.g. `u_int` page counts vs. `uint64_t` counters).
+    pub fn read_uint(&self) -> io::Result<u64> {
+        let mut buf = [0u8; 8];
+        let mut len = buf.len();
+        // SAFETY: `buf` is valid for `len` bytes.
+        unsafe { self.raw(buf.as_mut_ptr().cast(), &mut len)? };
+        match len {
+            4 => Ok(u64::from(u32::from_ne_bytes(
+                buf[..4].try_into().unwrap_or_default(),
+            ))),
+            8 => Ok(u64::from_ne_bytes(buf)),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("sysctl returned {len} bytes, expected 4 or 8"),
+            )),
+        }
+    }
+}
+
 /// Reinterprets a byte buffer as a slice of `T` (e.g. `kern.cp_times`).
 /// Fails if the length isn't a multiple of `size_of::<T>()`.
 pub fn cast_slice<T: Plain>(bytes: &[u8]) -> io::Result<Vec<T>> {

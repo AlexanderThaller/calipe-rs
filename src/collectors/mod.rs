@@ -1,5 +1,37 @@
+/// Defines a stand-in for a FreeBSD-only collector on other platforms whose
+/// constructor fails, so enabling it there is a startup error.
+macro_rules! freebsd_only {
+    ($ty:ident, $name:literal) => {
+        #[cfg(not(target_os = "freebsd"))]
+        pub struct $ty;
+
+        #[cfg(not(target_os = "freebsd"))]
+        impl $ty {
+            pub fn new(_config: &Config) -> anyhow::Result<Self> {
+                anyhow::bail!(concat!(
+                    "the ",
+                    $name,
+                    " input is only supported on FreeBSD"
+                ))
+            }
+        }
+
+        #[cfg(not(target_os = "freebsd"))]
+        impl $crate::collector::Collector for $ty {
+            fn name(&self) -> &'static str {
+                $name
+            }
+
+            async fn collect(&mut self) -> anyhow::Result<()> {
+                unreachable!("constructor always fails on this platform")
+            }
+        }
+    };
+}
+
 pub mod cpu;
 pub mod internal;
+pub mod mem;
 
 use std::time::Duration;
 
@@ -15,6 +47,9 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
 
     if let Some(c) = &config.inputs.cpu {
         out.push(Scheduled::new(cpu::Cpu::new(c)?, interval(c.interval)));
+    }
+    if let Some(c) = &config.inputs.mem {
+        out.push(Scheduled::new(mem::Mem::new(c)?, interval(c.interval)));
     }
     if let Some(c) = &config.inputs.internal {
         out.push(Scheduled::new(

@@ -16,8 +16,6 @@ use std::time::Duration;
 use metrics::{describe_gauge, gauge};
 use serde::Deserialize;
 
-use crate::collector::Collector;
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -97,26 +95,7 @@ fn export_modes(name: &'static str, cpu: Option<&str>, seconds: &[f64; MODES.len
 #[cfg(target_os = "freebsd")]
 pub use freebsd::Cpu;
 
-#[cfg(not(target_os = "freebsd"))]
-pub struct Cpu;
-
-#[cfg(not(target_os = "freebsd"))]
-impl Cpu {
-    pub fn new(_config: &Config) -> anyhow::Result<Self> {
-        anyhow::bail!("the cpu input is only supported on FreeBSD")
-    }
-}
-
-#[cfg(not(target_os = "freebsd"))]
-impl Collector for Cpu {
-    fn name(&self) -> &'static str {
-        "cpu"
-    }
-
-    async fn collect(&mut self) -> anyhow::Result<()> {
-        unreachable!("Cpu::new always fails on this platform")
-    }
-}
+freebsd_only!(Cpu, "cpu");
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
@@ -124,9 +103,9 @@ mod freebsd {
     use metrics::gauge;
 
     use super::{
-        Collector, Config, MODES, describe, export_modes, is_present, kelvin_to_celsius,
-        ticks_to_seconds,
+        Config, MODES, describe, export_modes, is_present, kelvin_to_celsius, ticks_to_seconds,
     };
+    use crate::collector::Collector;
     use crate::sys::freebsd::{Mib, cast_slice};
 
     struct Sensor {
