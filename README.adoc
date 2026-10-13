@@ -51,6 +51,23 @@ calipers [--config PATH] [--check-config] [--once]
 * `--check-config`: parse the config and set up every input, then exit.
 * `--once`: collect once, print the metrics to stdout and exit (handy for debugging).
 
+== Grafana
+
+`resources/grafana/calipers.json` is an overview dashboard for any number of hosts. Import it in
+Grafana (Dashboards, New, Import) or provision it from a file; it asks for a Prometheus data source.
+
+* The `Job`, `Realm` and `Host` variables select hosts (multi-select, default all). Click a host name
+  in a table to show only that host.
+* Top: totals across the selected hosts (CPU, memory, network, fullest filesystem and pool, open
+  problems, collector errors), then one table row per host.
+* CPU, memory, storage and network as time series per host; Health lists everything unhealthy right
+  now (ZFS, SMART, HTTP and DNS probes, chrony) and SMART per drive.
+* Collapsed rows: probe tables and latencies, monitored processes, and calipers' own collector
+  timings.
+
+The JSON is generated: edit `resources/grafana/generate.py` and run
+`python3 resources/grafana/generate.py > resources/grafana/calipers.json`.
+
 == Development
 
 * `cargo test`, `cargo clippy --all-targets` (Linux) and
