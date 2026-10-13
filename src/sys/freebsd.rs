@@ -34,8 +34,9 @@ unsafe impl<T: Plain, const N: usize> Plain for [T; N] {}
 // SAFETY: kinfo_proc is a repr(C) struct of integers, arrays and raw pointers
 // (never dereferenced by us).
 unsafe impl Plain for libc::kinfo_proc {}
-// SAFETY: repr(C) struct of integers.
+// SAFETY: repr(C) structs of integers.
 unsafe impl Plain for libc::timeval {}
+unsafe impl Plain for libc::clockinfo {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mib(Vec<c_int>);
@@ -64,6 +65,20 @@ impl Mib {
         let mut parts = self.0.clone();
         parts.extend_from_slice(extra);
         Self(parts)
+    }
+
+    /// Returns the OID's format string (e.g. `"IK"`, `"LU"`, `"S,clockinfo"`),
+    /// via the undocumented `{CTL_SYSCTL, CTL_SYSCTL_OIDFMT}` node that
+    /// sysctl(8) uses too.
+    pub fn format(&self) -> io::Result<String> {
+        let mut buf = Vec::new();
+        Self::from_raw(&[libc::CTL_SYSCTL, libc::CTL_SYSCTL_OIDFMT])
+            .with(&self.0)
+            .read_into(&mut buf)?;
+        // Layout: u_int kind, then the NUL-terminated format string.
+        let fmt = buf.get(size_of::<u32>()..).unwrap_or_default();
+        let fmt = fmt.split(|&b| b == 0).next().unwrap_or_default();
+        Ok(String::from_utf8_lossy(fmt).into_owned())
     }
 
     /// Calls sysctl(3). `old` may be null to query the size.

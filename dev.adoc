@@ -159,7 +159,9 @@ parser/decoder, verified on the FreeBSD VM.
 
 |cpu
 |`kern.cp_times`, `kern.cp_time`, `kern.clockrate`; optional `dev.cpu.N.temperature`, `dev.cpu.N.freq`
-|`cpu_seconds_total{cpu,mode}` (`cpu="total"` for the aggregate); optional `cpu_temperature_celsius{cpu}`,
+|`cpu_seconds_total{cpu,mode}` per CPU and `cpu_all_seconds_total{mode}` summed over all CPUs (a
+separate metric, so `sum(rate(cpu_seconds_total[5m]))` doesn't double count); modes are user, nice,
+system, interrupt, idle. Opt-in `cpu_temperature_celsius{cpu}`,
 `cpu_frequency_hertz{cpu}`. *[decide]*: is `/root/src/priv/scripts/freebsd_cpu` (exec) reporting
 temperature/frequency? If so, the native option replaces it.
 

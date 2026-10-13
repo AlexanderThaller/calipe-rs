@@ -39,3 +39,5 @@ unused_async = "allow"
 unused_async_trait_impl = "allow"
 # Collector constructors return Result uniformly.
 unnecessary_wraps = "allow"
+# Config structs are naturally a bag of on/off switches.
+struct_excessive_bools = "allow"

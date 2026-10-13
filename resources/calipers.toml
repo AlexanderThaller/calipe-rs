@@ -13,4 +13,10 @@ role = "root.thaller.ws"
 [exporter]
 listen = "0.0.0.0:9273"
 
+[inputs.cpu]
+percpu = true
+totalcpu = true
+# temperature = true   # needs coretemp(4)/amdtemp(4)
+# frequency = true     # needs cpufreq(4)
+
 [inputs.internal]

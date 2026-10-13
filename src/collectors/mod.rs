@@ -1,3 +1,4 @@
+pub mod cpu;
 pub mod internal;
 
 use std::time::Duration;
@@ -12,6 +13,9 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
     let interval = |own: Option<Duration>| own.unwrap_or(default);
     let mut out = Vec::new();
 
+    if let Some(c) = &config.inputs.cpu {
+        out.push(Scheduled::new(cpu::Cpu::new(c)?, interval(c.interval)));
+    }
     if let Some(c) = &config.inputs.internal {
         out.push(Scheduled::new(
             internal::Internal::new(),
