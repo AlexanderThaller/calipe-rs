@@ -26,6 +26,9 @@ ignore_fs = ["tmpfs", "devtmpfs"]
 
 [inputs.mem]
 
+[inputs.net]
+# interfaces = ["igb0", "tailscale*"]   # default: all up, non-loopback
+
 [inputs.swap]
 
 [inputs.system]

@@ -207,9 +207,13 @@ by offset and version-checked)
 filter. Matches `iostat -I -x`.
 
 |net
-|`getifaddrs` → `AF_LINK` `if_data`
+|One `NET_RT_IFLISTL` routing sysctl for all interfaces (`if_msghdrl` + `if_data`, identical on 14.5 and
+15.1; header and data offsets come from the message itself)
 |`net_{received,sent}_bytes_total`, `net_{received,sent}_packets_total`,
-`net_{receive,send}_errors_total`, `net_{receive,send}_drops_total{interface}`
+`net_{received,sent}_multicast_packets_total`, `net_{receive,send}_errors_total`,
+`net_{receive,send}_drops_total`, `net_collisions_total` (real counters), `net_link_up`,
+`net_speed_bits_per_second{interface}`. Default: all interfaces that are up and not loopback (like
+Telegraf); `interfaces` takes globs. Matches `netstat -ibdn`.
 
 |netstat
 |`net.inet.tcp.states`, `xig_count` header of `net.inet.udp.pcblist`
