@@ -254,10 +254,14 @@ last scrub/resilver: `zfs_pool_scan_info{pool,function,state}`,
 `zfs_pool_scan_errors`. Config: `kstats`, `pools`, `vdevs` (replaces Telegraf's `poolMetrics`).
 
 |chrony
-|chrony protocol over UDP
-|`chrony_{system_time,last_offset,rms_offset,root_delay,root_dispersion}_seconds`,
-`chrony_frequency_ppm`, `chrony_residual_frequency_ppm`, `chrony_skew_ppm`, `chrony_stratum`,
-`chrony_update_interval_seconds`, labels `reference_id`, `leap_status`
+|chrony command protocol v6 (`REQ_TRACKING`, request padded to the reply length) over UDP to
+`127.0.0.1:323`; no `chronyc`
+|`chrony_system_time_correction_seconds` (positive = clock slow), `chrony_{last,rms}_offset_seconds`,
+`chrony_frequency_ppm` (negative = slow, as in `chronyc -c`), `chrony_residual_frequency_ppm`,
+`chrony_skew_ppm`, `chrony_root_{delay,dispersion}_seconds`, `chrony_update_interval_seconds`,
+`chrony_reference_time_seconds`, `chrony_stratum`, `chrony_synchronized`, and
+`chrony_tracking_info{reference_id,reference_ip,leap_status}` instead of Telegraf's tags on every
+field. Matches `chronyc -c tracking`; config `server`, `timeout`.
 
 |dns_query
 |Hand-written UDP DNS client

@@ -13,6 +13,9 @@ role = "root.thaller.ws"
 [exporter]
 listen = "0.0.0.0:9273"
 
+[inputs.chrony]
+# server = "127.0.0.1:323"
+
 [inputs.cpu]
 percpu = true
 totalcpu = true

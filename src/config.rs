@@ -77,6 +77,7 @@ fn default_listen() -> SocketAddr {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Inputs {
+    pub chrony: Option<crate::collectors::chrony::Config>,
     pub cpu: Option<crate::collectors::cpu::Config>,
     pub disk: Option<crate::collectors::disk::Config>,
     pub diskio: Option<crate::collectors::diskio::Config>,
