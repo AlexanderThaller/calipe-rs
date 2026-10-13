@@ -43,6 +43,11 @@ const LATENCY_BUCKETS: [f64; 19] = [
 /// dropped, so metrics of vanished processes, disks, etc. disappear.
 const IDLE_TIMEOUT_INTERVALS: u32 = 3;
 
+/// Blocking-pool threads (getaddrinfo for HTTP probes, disk, smart) outlive
+/// any collector interval. With tokio's 10s default they exit and respawn
+/// every 10s cycle, and each new thread costs allocator state again.
+const BLOCKING_THREAD_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(3600);
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_logging();
@@ -50,6 +55,7 @@ fn main() -> Result<()> {
     let config = Config::load(&cli.config)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
+        .thread_keep_alive(BLOCKING_THREAD_KEEP_ALIVE)
         .build()?;
     if cli.check_config {
         // Set up every input (open devices, resolve sysctls, compile regexes),
@@ -162,3 +168,12 @@ async fn shutdown_signal() -> &'static str {
         _ = int.recv() => "SIGINT",
     }
 }
+
+/// Read by FreeBSD's libc jemalloc at startup. One arena: calipers has about
+/// 1.3 MB live heap, but with the default 4 arenas per CPU each blocking
+/// thread got its own arena, and jemalloc's never-freed base metadata grew
+/// with them (RSS ~28 MB on 4 CPUs, 46+ MB on 16, versus ~16 MB here).
+#[cfg(target_os = "freebsd")]
+#[used]
+#[unsafe(no_mangle)]
+static malloc_conf: &u8 = &b"narenas:1\0"[0];
