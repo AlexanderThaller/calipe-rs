@@ -1,0 +1,357 @@
+= calipe-rs: Development Plan
+:toc: left
+:toclevels: 2
+:icons: font
+
+A Rust replacement for the Telegraf setup in `resources/telegraf.conf`, running on a FreeBSD host
+and exposing a Prometheus endpoint. Priorities: *correctness* first, then *low resource usage*.
+
+NOTE: This document is for review before implementation starts. Items marked *[decide]* need your input;
+everything else is my proposed default.
+
+== Goals and non-goals
+
+.Goals
+* Cover every input in `resources/telegraf.conf` on FreeBSD (13.x/14.x amd64).
+* Pull-only: expose metrics over HTTP via https://github.com/metrics-rs/metrics[metrics-rs] +
+  `metrics-exporter-prometheus`. No push outputs.
+* Use proper Prometheus semantics where Telegraf doesn't (real counters, base units, label names that
+  follow conventions), even if this breaks existing Telegraf dashboards.
+* Single static binary, one small config file, rc.d script for FreeBSD.
+
+.Non-goals
+* Config compatibility with Telegraf. We use our own config format (close to Telegraf's).
+* Plugins beyond what the config uses. Adding a module later should be easy.
+* Linux support for the system collectors. Portable modules (DNS, HTTP, chrony, exec, smart, pf/zpool
+  parsing) work on Linux anyway, which helps local testing.
+
+== Architecture
+
+----
+main
+ ├─ config (TOML, serde, deny_unknown_fields)
+ ├─ exporter (metrics-exporter-prometheus, HTTP listener, global labels)
+ ├─ scheduler (tokio current_thread runtime, one task per collector, own interval)
+ └─ collectors/
+     ├─ cpu, mem, swap, system, kernel, disk, diskio, net, netstat, zfs     (sysctl/libc, sync)
+     ├─ processes + procstat                                                (one shared process-table read)
+     ├─ chrony, dns_query, http_response                                    (async network)
+     ├─ smart, pf, zpool part of zfs, exec                                  (async subprocess)
+     └─ internal                                                            (self-monitoring)
+----
+
+=== Decisions
+
+[cols="1,3,2"]
+|===
+|Topic |Decision |Rationale
+
+|Runtime
+|`tokio` with a *current_thread* runtime. Sysctl collectors run inline (they take microseconds to
+milliseconds); network and subprocess collectors are async.
+|One thread instead of a pool. A scrape may wait a few ms while a sysctl collector runs, which is fine.
+
+|Collection model
+|Interval-based: each collector updates metrics-rs handles every `interval` (default 10s, overridable
+per input). This is how Telegraf works, and how metrics-rs is built.
+|Alternative: collect on scrape (node_exporter style). That doesn't fit metrics-rs's push-into-registry
+model.
+
+|Stale series
+|`idle_timeout` on the exporter = 3 × the longest collector interval. Series that stop being updated
+(for example a process that exits, a disk that's unplugged) disappear.
+|Telegraf's prometheus_client output does the same thing with `expiration_interval`.
+
+|Counters
+|Monotonic kernel counters are exported as Prometheus *counters* (`counter!().absolute(v)`, `_total`
+suffix). Telegraf exports everything as gauges/untyped.
+|Makes `rate()` correct and lets Prometheus handle counter resets.
+
+|CPU usage
+|Export raw `cpu_seconds_total{cpu,mode}` (ticks / `kern.clockrate` stathz) instead of Telegraf's
+precomputed `usage_*` percentages.
+|Precomputed percentages throw away data between scrapes. `rate()` gives exact averages over any window.
+
+|Units
+|Base units in names: `_bytes`, `_seconds`, `_celsius`. No milliseconds, no KiB, no pages.
+|Prometheus conventions.
+
+|Global labels
+|`[global_tags]` + `host` (from `gethostname` unless `omit_hostname`) become exporter-wide global
+labels.
+|Same as Telegraf.
+
+|FreeBSD data sources
+|Direct `sysctl(3)`/libc calls. MIBs are resolved once at startup (`sysctlnametomib`) and read via
+`sysctl(mib)` after that. A small sysctl walker is used for dynamic subtrees (ZFS kstats).
+|No `fork`/`exec` for anything the kernel exposes directly. Much cheaper than gopsutil's mix of sysctl
+and command parsing.
+
+|Subprocesses
+|Only where there's no stable kernel ABI: `smartctl` (JSON output, `-j`), `pfctl -s info`, `zpool list -Hp`,
+and `exec`.
+|`pf`'s `DIOCGETSTATUS` struct changes size between releases, and libzfs has no stable ABI. Parsing text
+that's meant for scripts is the more robust option.
+
+|HTTP client
+|`reqwest` (rustls + ring, webpki roots, no redirects followed, matching Telegraf's default).
+|ring avoids aws-lc-rs's C/cmake build, which makes cross-compiling for FreeBSD easier. *[decide]*: webpki
+bundled roots vs. the system trust store (`/usr/local/share/certs`). Proposed: webpki roots.
+
+|DNS client
+|A small hand-written DNS query over UDP (query + header/rcode parsing).
+|We only need rcode and timing, so a full DNS library (hickory) isn't worth the dependency.
+
+|chrony
+|Native chrony command protocol (v6, `REQ_TRACKING`) over UDP to `127.0.0.1:323`. No `chronyc`.
+|Recent Telegraf versions do the same. No process spawn every 10 seconds.
+
+|Regex
+|`regex` crate for procstat `exe`/`pattern`.
+|Same semantics as Telegraf's pgrep-like matching.
+
+|Errors
+|A collector failure is logged (rate-limited) and counted in
+`calipers_collector_errors_total{collector}`. It never takes down the agent. Startup config errors are
+fatal.
+|
+
+|Logging
+|`tracing` + `tracing-subscriber`, logs to stderr (works with daemon(8)/syslog in rc.d).
+|
+|===
+
+=== Crates (proposed)
+
+`metrics`, `metrics-exporter-prometheus` (default features off, `http-listener` only), `tokio`,
+`serde` + `toml`, `humantime-serde`, `libc`, `regex`, `reqwest`, `serde_json` (smartctl),
+`tracing`, `tracing-subscriber`, `anyhow`/`thiserror`, `clap` (CLI: `--config`, `--check-config`,
+`--once` to print one collection to stdout).
+
+== FreeBSD ABI concerns
+
+These are the parts that are most likely to be wrong, so each one gets verified on a real FreeBSD VM
+(see <<testing>>).
+
+* *libc crate FreeBSD version.* `libc` defaults to the FreeBSD 11 ABI for some structs (`statfs`,
+  `kinfo_proc`, `dev_t`). I'll check what the current `libc` defaults to, and pin
+  `RUST_LIBC_UNSTABLE_FREEBSD_VERSION` (or define the structs we need) if necessary.
+* *`struct devstat`* (diskio, read via `kern.devstat.all`). It isn't in the `libc` crate, so we define
+  it ourselves and check `kern.devstat.version == 6` at startup. Reads are consistent when
+  `sequence0 == sequence1`; otherwise we retry.
+* *`struct xswdev`* (swap, `vm.swap_info.N`). Version 2, 64-bit `dev_t`.
+* *`kinfo_proc`*: we only use the stable fields (pid, comm, stat, uid, rssize, size, numthreads, start,
+  rusage).
+* *Truncated process names*: `ki_comm` is limited to 19 characters (`http_responsetime_exporter` gets cut
+  off). When `comm` is at the limit, we take the basename of `argv[0]` from `kern.proc.args.<pid>` and
+  use it if it starts with `comm`.
+* *`getfsstat`* instead of `getmntinfo`, because `getmntinfo` uses a static buffer and isn't thread-safe.
+
+== Modules
+
+Order is the implementation order. Each module = one file under `src/collectors/`, unit tests for every
+parser/decoder, verified on the FreeBSD VM.
+
+[cols="1,2,3"]
+|===
+|Module |Source on FreeBSD |Metrics (labels) — changes from Telegraf
+
+|cpu
+|`kern.cp_times`, `kern.cp_time`, `kern.clockrate`; optional `dev.cpu.N.temperature`, `dev.cpu.N.freq`
+|`cpu_seconds_total{cpu,mode}` (`cpu="total"` for the aggregate); optional `cpu_temperature_celsius{cpu}`,
+`cpu_frequency_hertz{cpu}`. *[decide]*: is `/root/src/priv/scripts/freebsd_cpu` (exec) reporting
+temperature/frequency? If so, the native option replaces it.
+
+|mem
+|`vm.stats.vm.v_*_count`, `hw.pagesize`, `hw.physmem`, `vfs.bufspace`
+|`mem_{total,free,active,inactive,wired,laundry,buffer,available,used}_bytes`. `available` is defined
+the way gopsutil does it (inactive + laundry + free), so values match what Telegraf reported.
+
+|swap
+|`vm.swap_info.N`, `vm.stats.vm.v_swappgs{in,out}`
+|`swap_{total,used,free}_bytes{device}`, `swap_{in,out}_bytes_total`
+
+|system
+|`vm.loadavg`, `kern.boottime`, `hw.ncpu`, utmpx
+|`system_load{1,5,15}`, `system_boot_time_seconds` (instead of uptime; uptime = `time() - boot_time`),
+`system_cpus`, `system_users`
+
+|kernel
+|`vm.stats.sys.v_{swtch,intr,soft,syscall,trap}`, `vm.stats.vm.v_{forks,vforks,rforks}`
+|`kernel_context_switches_total`, `kernel_interrupts_total{type=hard\|soft}`, `kernel_syscalls_total`,
+`kernel_forks_total`. Note: Telegraf's `inputs.kernel` is *Linux-only*, so this input currently produces
+nothing on the server. This adds data you didn't have before.
+
+|disk
+|`getfsstat(MNT_NOWAIT)` + `statfs`
+|`disk_{total,free,avail,used}_bytes`, `disk_inodes_{total,free}{path,device,fstype,mode}`. Also skips
+`ignore_fs` (tmpfs, devtmpfs) and `devfs`/`fdescfs`/`procfs` by default. *[decide]*: ZFS creates one
+mount per dataset, which can mean hundreds of series. Keep all of them (Telegraf's behavior) or add an
+`ignore_mount_prefix` option?
+
+|diskio
+|`kern.devstat.all`
+|`diskio_{reads,writes,frees}_total`, `diskio_{read,written,freed}_bytes_total`,
+`diskio_{read,write}_time_seconds_total`, `diskio_busy_seconds_total`, `diskio_in_progress{name}`.
+`pass*` devices are skipped.
+
+|net
+|`getifaddrs` → `AF_LINK` `if_data`
+|`net_{received,sent}_bytes_total`, `net_{received,sent}_packets_total`,
+`net_{receive,send}_errors_total`, `net_{receive,send}_drops_total{interface}`
+
+|netstat
+|`net.inet.tcp.states`, `xig_count` header of `net.inet.udp.pcblist`
+|`netstat_tcp_connections{state}`, `netstat_udp_sockets`. Telegraf's gopsutil connection listing is
+probably not implemented on FreeBSD (to be checked), so this may also be new data.
+
+|processes + procstat
+|One `kern.proc.proc` read per interval, shared by both
+|`processes{state}`, `processes_threads`; procstat: `procstat_cpu_seconds_total{mode}`,
+`procstat_memory_{rss,virtual}_bytes`, `procstat_threads`, `procstat_start_time_seconds`,
+`procstat_context_switches_total{type}`, `procstat_block_io_total{op}`,
+`procstat_lookup_pids{query}`. Labels: `query`, `process_name`, `user`, `pid` (when
+`tag_with = ["pid"]`). The duplicate `http_responsetime_exporter` entry in the config gets removed (the
+two entries would produce the same series). *[decide]*: per-pid labels cause series churn on every
+restart. Keep `pid`, or aggregate per query (sum over matching processes) by default?
+
+|zfs
+|`kstat.zfs.misc.{arcstats,zfetchstats}` (sysctl walk, MIBs cached), `zpool list -Hp`
+|`zfs_arcstats_<name>` (counters for hits/misses/evictions, gauges for everything else),
+`zfs_pool_{size,allocated,free}_bytes`, `zfs_pool_fragmentation_ratio`, `zfs_pool_health{pool,health}` (=1)
+
+|chrony
+|chrony protocol over UDP
+|`chrony_{system_time,last_offset,rms_offset,root_delay,root_dispersion}_seconds`,
+`chrony_frequency_ppm`, `chrony_residual_frequency_ppm`, `chrony_skew_ppm`, `chrony_stratum`,
+`chrony_update_interval_seconds`, labels `reference_id`, `leap_status`
+
+|dns_query
+|Hand-written UDP DNS client
+|`dns_query_duration_seconds`, `dns_query_rcode`, `dns_query_success{server,domain,record_type}`
+
+|http_response
+|reqwest
+|`http_response_duration_seconds`, `http_response_status_code`, `http_response_content_length_bytes`,
+`http_response_success{url,method}`, `result` label (success, timeout, connection_failed, ...)
+
+|smart
+|`smartctl --scan -j`, then `smartctl -j -a -n standby <dev>` for each device
+|`smart_device_healthy`, `smart_temperature_celsius`, `smart_power_on_seconds`,
+`smart_power_cycles_total`, `smart_attribute_{value,worst,threshold,raw}{id,name}`, NVMe health-log fields.
+Drives in standby are skipped (`nocheck = standby`). Default interval *60s*, not 10s: running smartctl
+every 10s is wasteful, and SMART data changes slowly. *[decide]*: `path_nvme` (nvmecontrol) gets dropped,
+since smartctl JSON already covers NVMe.
+
+|pf
+|`pfctl -s info` (parsed)
+|`pf_states`, `pf_state_{searches,inserts,removals}_total`, `pf_counter_total{reason}`
+
+|exec
+|Subprocess, parses Influx line protocol
+|`<measurement>_<field>{tags}` as gauges. Strings are skipped, bools become 0/1.
+
+|internal
+|Self
+|`calipers_collector_duration_seconds{collector}`, `calipers_collector_errors_total{collector}`,
+`calipers_build_info{version}`, own RSS/CPU
+|===
+
+== Config
+
+Our own format. It's close to Telegraf's so the translation is obvious, with typo detection through
+`deny_unknown_fields`. The translated config lives in `resources/calipers.toml`. Excerpt:
+
+[source,toml]
+----
+[agent]
+interval = "10s"
+# hostname = ""        # default: gethostname()
+# omit_hostname = false
+
+[global_tags]
+realm = "hetzner"
+role = "root.thaller.ws"
+
+[exporter]
+listen = "[::]:9273"
+
+[inputs.cpu]
+percpu = true
+totalcpu = true
+
+[inputs.disk]
+ignore_fs = ["tmpfs", "devtmpfs"]
+
+[inputs.smart]
+interval = "60s"
+excludes = ["/dev/ses0"]
+nocheck = "standby"
+path_smartctl = "/usr/local/sbin/smartctl"
+
+[[inputs.procstat]]
+exe = "nginx"
+tag_with = ["pid"]
+
+[[inputs.dns_query]]
+domains = ["ip.thaller.ws"]
+record_type = "A"
+servers = ["1.0.0.1", "1.1.1.1", "8.8.4.4", "8.8.8.8"]
+----
+
+Dropped Telegraf agent options (they only matter for push outputs or don't apply): `flush_interval`,
+`flush_jitter`, `metric_batch_size`, `metric_buffer_limit`, `precision`, `collection_jitter`,
+`round_interval` (we always align to interval boundaries).
+
+[[testing]]
+== Testing and verification
+
+. *Unit tests* for every parser and decoder: chrony float/packet decoding, DNS packet build/parse,
+  Influx line protocol, `pfctl -s info`, `zpool list`, smartctl JSON (fixtures captured from real
+  drives), devstat/xswdev struct layouts (`size_of` assertions against the C headers).
+. *Cross-check*: `cargo clippy --target x86_64-unknown-freebsd` in CI and locally. This needs
+  `rustup target add x86_64-unknown-freebsd`, which isn't installed yet.
+. *FreeBSD VM*: qemu/KVM is available here. I'd boot an official FreeBSD 14.x VM image, build natively
+  inside it (or copy over a cross-built binary), and compare our output against `sysctl`,
+  `vmstat`, `iostat -x`, `swapinfo`, `netstat -i`, `pfctl -s info`, `ps`, and against Telegraf itself
+  (installed in the VM from `pkg`) using the same config. ZFS root, pf enabled, and chrony from pkg
+  give us all the inputs except real SMART data.
+. *Resource check*: compare RSS and CPU time against Telegraf in the VM over 1 hour.
+. *Final check on the server*: you run `calipers --once` and/or run it next to Telegraf on a different
+  port. I won't touch the server myself.
+
+== Build and deployment
+
+* Cross-compiling for `x86_64-unknown-freebsd` needs a FreeBSD sysroot and linker, so the release
+  binary gets built *inside the FreeBSD VM* (or with `cross`). *[decide]*: build on the server itself
+  with `cargo build --release` (simplest), or build here and copy the binary over?
+* Naming: crate `calipe-rs`; binary, service, config file and metric prefix are all `calipers`
+  (`[[bin]] name = "calipers"` in `Cargo.toml`).
+* `resources/rc.d/calipers` script (daemon(8), `calipers_enable`, `calipers_config`).
+* Release profile: `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`.
+
+== Milestones
+
+. Skeleton: config, exporter, scheduler, internal metrics, `--once`, FreeBSD target check.
+. FreeBSD VM set up as the test bed.
+. Sysctl collectors: cpu, mem, swap, system, kernel.
+. disk, diskio, net, netstat.
+. processes + procstat.
+. zfs.
+. Network collectors: chrony, dns_query, http_response.
+. Subprocess collectors: smart, pf, exec.
+. Comparison with Telegraf in the VM, resource measurements, rc.d script, README.
+
+Each milestone gets its own commit (or its own PR, if you prefer reviewing that way).
+
+== Open questions (summary)
+
+. What does `/root/src/priv/scripts/freebsd_cpu` output? Can native CPU temperature/frequency replace it?
+. ZFS datasets in `disk`: keep all mounts, or filter?
+. procstat: keep the `pid` label, or aggregate per query?
+. smart: is a 60s default interval OK? Can we drop `path_nvme`?
+. HTTP TLS roots: bundled webpki or the system store?
+. Build location: on the server, or cross-built here (VM)?
+. Which FreeBSD version is the server running (13.x or 14.x)?
+. Are you OK with breaking metric names compared to Telegraf (are there Grafana dashboards that would
+  need updating)?
