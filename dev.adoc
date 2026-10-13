@@ -107,7 +107,7 @@ and `exec`.
 that's meant for scripts is the more robust option.
 
 |HTTP client
-|`reqwest` (rustls + ring, webpki roots, no redirects followed, matching Telegraf's default).
+|`reqwest` (rustls + ring, system trust store, no redirects followed, matching Telegraf's default).
 |ring avoids aws-lc-rs's C/cmake build, which makes cross-compiling for FreeBSD easier. Roots come
 from the system trust store (`/etc/ssl/cert.pem` on FreeBSD) via rustls-platform-verifier.
 
