@@ -71,14 +71,32 @@ impl Mib {
     /// via the undocumented `{CTL_SYSCTL, CTL_SYSCTL_OIDFMT}` node that
     /// sysctl(8) uses too.
     pub fn format(&self) -> io::Result<String> {
+        Ok(self.kind_and_format()?.1)
+    }
+
+    /// Returns the OID's `CTLTYPE_*` kind and format string.
+    pub fn kind_and_format(&self) -> io::Result<(u32, String)> {
         let mut buf = Vec::new();
         Self::from_raw(&[libc::CTL_SYSCTL, libc::CTL_SYSCTL_OIDFMT])
             .with(&self.0)
             .read_into(&mut buf)?;
         // Layout: u_int kind, then the NUL-terminated format string.
+        let kind = buf
+            .get(..4)
+            .map(|b| u32::from_ne_bytes(b.try_into().unwrap_or_default()))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "short OIDFMT reply"))?;
         let fmt = buf.get(size_of::<u32>()..).unwrap_or_default();
         let fmt = fmt.split(|&b| b == 0).next().unwrap_or_default();
-        Ok(String::from_utf8_lossy(fmt).into_owned())
+        Ok((kind, String::from_utf8_lossy(fmt).into_owned()))
+    }
+
+    /// Reads a string sysctl, without the trailing NUL (and newline, which
+    /// some kstats append).
+    pub fn read_string(&self) -> io::Result<String> {
+        let mut buf = Vec::new();
+        self.read_into(&mut buf)?;
+        let text = buf.split(|&b| b == 0).next().unwrap_or_default();
+        Ok(String::from_utf8_lossy(text).trim_end().to_owned())
     }
 
     /// Calls sysctl(3). `old` may be null to query the size.
@@ -142,6 +160,25 @@ impl Mib {
 }
 
 impl Mib {
+    /// Reads a signed integer that may be 32- or 64-bit, sign-extending
+    /// 32-bit values.
+    pub fn read_int(&self) -> io::Result<i64> {
+        let mut buf = [0u8; 8];
+        let mut len = buf.len();
+        // SAFETY: `buf` is valid for `len` bytes.
+        unsafe { self.raw(buf.as_mut_ptr().cast(), &mut len)? };
+        match len {
+            4 => Ok(i64::from(i32::from_ne_bytes(
+                buf[..4].try_into().unwrap_or_default(),
+            ))),
+            8 => Ok(i64::from_ne_bytes(buf)),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("sysctl returned {len} bytes, expected 4 or 8"),
+            )),
+        }
+    }
+
     /// Reads an unsigned integer that may be 32- or 64-bit depending on the
     /// sysctl (e.g. `u_int` page counts vs. `uint64_t` counters).
     pub fn read_uint(&self) -> io::Result<u64> {
@@ -160,6 +197,56 @@ impl Mib {
             )),
         }
     }
+}
+
+/// A leaf found by [`walk`].
+#[derive(Debug, Clone)]
+pub struct Leaf {
+    /// Full dotted name, e.g. `kstat.zfs.misc.arcstats.hits`.
+    pub name: String,
+    pub mib: Mib,
+    /// `CTLTYPE_*` value (kind & `CTLTYPE`).
+    pub kind: c_int,
+}
+
+/// Lists all leaf sysctls below `prefix` (in kernel order), using the same
+/// `{CTL_SYSCTL, CTL_SYSCTL_NEXT}` iteration as `sysctl -a`.
+pub fn walk(prefix: &str) -> io::Result<Vec<Leaf>> {
+    let root = Mib::new(prefix)?;
+    let mut leaves = Vec::new();
+    let mut current = root.clone();
+    let mut buf = Vec::new();
+    loop {
+        match Mib::from_raw(&[libc::CTL_SYSCTL, libc::CTL_SYSCTL_NEXT])
+            .with(&current.0)
+            .read_into(&mut buf)
+        {
+            Ok(()) => {}
+            Err(err) if err.raw_os_error() == Some(libc::ENOENT) => break,
+            Err(err) => return Err(err),
+        }
+        let next = Mib(cast_slice::<i32>(&buf)?);
+        if !next.0.starts_with(&root.0) {
+            break;
+        }
+        let mut name = Vec::new();
+        Mib::from_raw(&[libc::CTL_SYSCTL, libc::CTL_SYSCTL_NAME])
+            .with(&next.0)
+            .read_into(&mut name)?;
+        let name = String::from_utf8_lossy(name.split(|&b| b == 0).next().unwrap_or_default())
+            .into_owned();
+        let (kind, _) = next.kind_and_format()?;
+        // The high bits are CTLFLAG_* flags (CTLFLAG_RD is 0x80000000), so
+        // mask before converting.
+        let kind = c_int::try_from(kind & 0xf).expect("4 bits fit");
+        leaves.push(Leaf {
+            name,
+            mib: next.clone(),
+            kind,
+        });
+        current = next;
+    }
+    Ok(leaves)
 }
 
 /// A sysctl resolved at startup by name and read as an unsigned integer, with

@@ -83,6 +83,7 @@ pub struct Inputs {
     pub mem: Option<crate::collectors::mem::Config>,
     pub swap: Option<crate::collectors::swap::Config>,
     pub system: Option<crate::collectors::system::Config>,
+    pub zfs: Option<crate::collectors::zfs::Config>,
 }
 
 impl Config {

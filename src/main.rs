@@ -1,6 +1,7 @@
 mod collector;
 mod collectors;
 mod config;
+mod nvlist;
 mod sys;
 
 use std::path::PathBuf;

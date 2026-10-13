@@ -27,4 +27,9 @@ totalcpu = true
 
 [inputs.kernel]
 
+[inputs.zfs]
+# kstats = ["arcstats", "zfetchstats"]
+# pools = true
+# vdevs = true
+
 [inputs.internal]

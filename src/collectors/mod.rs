@@ -35,6 +35,7 @@ pub mod kernel;
 pub mod mem;
 pub mod swap;
 pub mod system;
+pub mod zfs;
 
 use std::time::Duration;
 
@@ -68,6 +69,9 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
             kernel::Kernel::new(c)?,
             interval(c.interval),
         ));
+    }
+    if let Some(c) = &config.inputs.zfs {
+        out.push(Scheduled::new(zfs::Zfs::new(c)?, interval(c.interval)));
     }
     if let Some(c) = &config.inputs.internal {
         out.push(Scheduled::new(

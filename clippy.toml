@@ -1,1 +1,1 @@
-doc-valid-idents = ["PromQL", ".."]
+doc-valid-idents = ["PromQL", "OpenZFS", ".."]

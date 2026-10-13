@@ -223,9 +223,16 @@ two entries would produce the same series). *[decide]*: per-pid labels cause ser
 restart. Keep `pid`, or aggregate per query (sum over matching processes) by default?
 
 |zfs
-|`kstat.zfs.misc.{arcstats,zfetchstats}` (sysctl walk, MIBs cached), `zpool list -Hp`
-|`zfs_arcstats_<name>` (counters for hits/misses/evictions, gauges for everything else),
-`zfs_pool_{size,allocated,free}_bytes`, `zfs_pool_fragmentation_ratio`, `zfs_pool_health{pool,health}` (=1)
+|`kstat.zfs.misc.{arcstats,zfetchstats}` (sysctl walk at startup, reads by MIB), `/dev/zfs` ioctls
+(`POOL_CONFIGS`, `POOL_GET_PROPS`, `POOL_STATS`) decoded in-process, `kstat.zfs.<pool>.misc.state`.
+*No `zpool` process.* See <<zfs-native>>.
+|`zfs_<kstat>_<field>` (event counts as counters with `_total`, everything else gauges),
+`zfs_pool_{size,allocated,free,freeing}_bytes`, `zfs_pool_fragmentation_ratio`, `zfs_pool_dedup_ratio`,
+`zfs_pool_health{pool,state}` (0/1 for every state), `zfs_pool_{ops,bytes}_total{pool,type}`,
+`zfs_vdev_state{pool,vdev,state}`, `zfs_vdev_errors_total{pool,vdev,type=read\|write\|checksum}`,
+last scrub/resilver: `zfs_pool_scan_info{pool,function,state}`,
+`zfs_pool_scan_{start,end}_time_seconds`, `zfs_pool_scan_{to_examine,issued}_bytes`,
+`zfs_pool_scan_errors`. Config: `kstats`, `pools`, `vdevs` (replaces Telegraf's `poolMetrics`).
 
 |chrony
 |chrony protocol over UDP
@@ -263,6 +270,31 @@ since smartctl JSON already covers NVMe.
 |`calipers_collector_duration_seconds{collector}`, `calipers_collector_errors_total{collector}`,
 `calipers_build_info{version}`, own RSS/CPU
 |===
+
+[[zfs-native]]
+== ZFS without `zpool`
+
+Telegraf runs `zpool list` every interval. calipers talks to the kernel the way `zpool` does:
+
+* `/dev/zfs` ioctls on FreeBSD take a `zfs_iocparm_t` wrapping a pointer to `zfs_cmd_t`. The kernel
+  copies `sizeof (zfs_cmd_t)` bytes in and out regardless of the size passed, so calipers hands it a
+  zeroed 64 KiB buffer and only relies on the offsets of the fields it uses (`zc_name`,
+  `zc_nvlist_dst{,_size}`, `zc_cookie`; checked at compile time). `vfs.zfs.version.ioctl` must be 15
+  (`ZFS_IOCVER_OZFS`), otherwise the input refuses to start.
+* Results are packed nvlists (native encoding), decoded by `src/nvlist.rs`.
+* `POOL_CONFIGS` lists pools. Its generation cookie makes repeated calls return `EEXIST` until a pool
+  is imported, exported or reconfigured, so the list is only re-read when it changed.
+* `POOL_GET_PROPS` returns the exact numbers `zpool list` prints, keyed by property name, so no
+  property enum numbers are hard-coded. `POOL_STATS` returns the vdev tree with `vdev_stat_t`
+  (append-only array; indices for state, ops, bytes and errors are fixed) and `pool_scan_stat_t`.
+* Neither ioctl needs privileges or writes to the pool history (`allow_log` is false).
+* Health comes from `kstat.zfs.<pool>.misc.state`, computed by the kernel with the same
+  `spa_state_to_name()` logic as `zpool list`. Vdev states use libzfs' `zpool_state_to_name()`
+  mapping. One known difference: hot spares show as ONLINE where `zpool status` prints AVAIL.
+
+Verified in the QEMU ZFS VM against `zpool list -Hp` and `zpool status` with a mirror, raidz1, cache
+and spare pool, an offlined disk (DEGRADED propagation), injected corruption (385 checksum errors on
+the right vdev) and a scrub.
 
 [[memory-model]]
 == Memory model
@@ -364,7 +396,11 @@ Dropped Telegraf agent options (they only matter for push outputs or don't apply
   cross-compiled on the host with `scripts/cross-build.sh` and copied over with scp. We compare our
   output against `sysctl`, `vmstat`, `iostat -x`, `swapinfo`, `netstat -i`, `pfctl -s info`, `ps`, and
   against Telegraf itself (installed from `pkg`) using the same config. The rootfs is UFS, so ZFS is
-  tested with a file-backed pool; pf and chrony come from base/pkg. Real SMART data is the only gap.
+  tested in a second VM; pf and chrony come from base/pkg. Real SMART data is the only gap.
+. *FreeBSD ZFS VM*: the Firecracker kernel is a custom build, and the stock `zfs.ko` panics it. ZFS is
+  tested in a QEMU/KVM VM running the official `FreeBSD-15.1-RELEASE-amd64-BASIC-CLOUDINIT-zfs` image
+  (GENERIC kernel, ZFS root), see `resources/qemu/vm.sh start|stop|ssh|scp|reset`. It needs no root:
+  user-mode networking forwards SSH to `127.0.0.1:2222` and the metrics port to `127.0.0.1:9275`.
 . *Resource check*: compare RSS and CPU time against Telegraf in the VM over 1 hour.
 . *Final check on the server*: you run `calipers --once` and/or run it next to Telegraf on a different
   port. I won't touch the server myself.
