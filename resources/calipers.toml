@@ -22,6 +22,8 @@ totalcpu = true
 [inputs.disk]
 ignore_fs = ["tmpfs", "devtmpfs"]
 
+[inputs.diskio]
+
 [inputs.mem]
 
 [inputs.swap]

@@ -137,9 +137,10 @@ These are the parts that are most likely to be wrong, so each one gets verified 
 
 * *libc crate FreeBSD version.* Checked: `libc` 0.2.190 defaults to the FreeBSD 12 ABI (64-bit
   `ino_t`/`dev_t`, current `statfs` and `kinfo_proc`), which matches 13, 14 and 15. No pinning needed.
-* *`struct devstat`* (diskio, read via `kern.devstat.all`). It isn't in the `libc` crate, so we define
-  it ourselves and check `kern.devstat.version == 6` at startup. Reads are consistent when
-  `sequence0 == sequence1`; otherwise we retry.
+* *`struct devstat`* (diskio, read via `kern.devstat.all`). It isn't in the `libc` crate, so we parse it
+  by offset (288 bytes on LP64) and check `kern.devstat.version == 6` at startup. Records with
+  `sequence0 != sequence1` were torn by a concurrent update and are skipped; `EBUSY` (device list
+  changed mid-read) is retried.
 * *`struct xswdev`* (swap, `vm.swap_info.N`). Version 2, 64-bit `dev_t`.
 * *`kinfo_proc`*: we only use the stable fields (pid, comm, stat, uid, rssize, size, numthreads, start,
   rusage).
@@ -197,10 +198,13 @@ mqueuefs, and anything with zero blocks) are always skipped; `ignore_fs` and `mo
 Telegraf. All ZFS dataset mounts are reported (Telegraf's behavior). Matches `df -k -i` on UFS and ZFS.
 
 |diskio
-|`kern.devstat.all`
-|`diskio_{reads,writes,frees}_total`, `diskio_{read,written,freed}_bytes_total`,
-`diskio_{read,write}_time_seconds_total`, `diskio_busy_seconds_total`, `diskio_in_progress{name}`.
-`pass*` devices are skipped.
+|`kern.devstat.all` (one sysctl for all disks; `struct devstat` v6, identical on 14.5 and 15.1, parsed
+by offset and version-checked)
+|`diskio_operations_total{device,type}`, `diskio_bytes_total{device,type}`,
+`diskio_time_seconds_total{device,type}` (type = read, write, free (TRIM), other (flush)),
+`diskio_busy_seconds_total{device}` (rate = iostat `%b`, includes the in-flight interval),
+`diskio_in_progress{device}`. pass(4) devices and torn records are skipped; optional `devices`
+filter. Matches `iostat -I -x`.
 
 |net
 |`getifaddrs` → `AF_LINK` `if_data`

@@ -79,6 +79,7 @@ fn default_listen() -> SocketAddr {
 pub struct Inputs {
     pub cpu: Option<crate::collectors::cpu::Config>,
     pub disk: Option<crate::collectors::disk::Config>,
+    pub diskio: Option<crate::collectors::diskio::Config>,
     pub internal: Option<crate::collectors::internal::Config>,
     pub kernel: Option<crate::collectors::kernel::Config>,
     pub mem: Option<crate::collectors::mem::Config>,

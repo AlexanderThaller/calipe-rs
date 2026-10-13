@@ -31,6 +31,7 @@ macro_rules! freebsd_only {
 
 pub mod cpu;
 pub mod disk;
+pub mod diskio;
 pub mod internal;
 pub mod kernel;
 pub mod mem;
@@ -76,6 +77,12 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
     }
     if let Some(c) = &config.inputs.disk {
         out.push(Scheduled::new(disk::Disk::new(c)?, interval(c.interval)));
+    }
+    if let Some(c) = &config.inputs.diskio {
+        out.push(Scheduled::new(
+            diskio::DiskIo::new(c)?,
+            interval(c.interval),
+        ));
     }
     if let Some(c) = &config.inputs.internal {
         out.push(Scheduled::new(
