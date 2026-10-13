@@ -34,31 +34,7 @@ ignore_fs = ["tmpfs", "devtmpfs"]
 [inputs.processes]
 
 [[inputs.procstat]]
-exe = "http_responsetime_exporter"
-tag_with = ["pid"]
-
-[[inputs.procstat]]
-exe = "plexmediaserver"
-tag_with = ["pid"]
-
-[[inputs.procstat]]
-pattern = "Plex"
-tag_with = ["pid"]
-
-[[inputs.procstat]]
-exe = "transmission-daemon"
-tag_with = ["pid"]
-
-[[inputs.procstat]]
 exe = "uploader-rs"
-tag_with = ["pid"]
-
-[[inputs.procstat]]
-exe = "mosquitto"
-tag_with = ["pid"]
-
-[[inputs.procstat]]
-exe = "sfz"
 tag_with = ["pid"]
 
 [[inputs.procstat]]
@@ -74,7 +50,11 @@ exe = "prometheus"
 tag_with = ["pid"]
 
 [[inputs.procstat]]
-exe = "logreader"
+exe = "telegraf"
+tag_with = ["pid"]
+
+[[inputs.procstat]]
+exe = "calipers"
 tag_with = ["pid"]
 
 [inputs.swap]
