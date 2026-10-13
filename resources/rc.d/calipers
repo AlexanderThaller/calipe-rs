@@ -1,0 +1,66 @@
+#!/bin/sh
+
+# PROVIDE: calipers
+# REQUIRE: LOGIN NETWORKING
+# KEYWORD: shutdown
+#
+# Add these lines to /etc/rc.conf to enable calipers:
+#
+# calipers_enable (bool):     Set to "YES" to enable calipers. Default: "NO".
+# calipers_config (path):     Configuration file.
+#                             Default: "/usr/local/etc/calipers.toml".
+# calipers_flags (str):       Extra command line flags. Default: "".
+# calipers_user (str):        User to run as. Default: "root" (the pf and smart
+#                             inputs and procstat of other users' processes
+#                             need root).
+# calipers_env (str):         Environment, e.g. "RUST_LOG=calipers=debug".
+#                             Default: "RUST_LOG=info".
+# calipers_syslog_tag (str):  Syslog tag. Default: "calipers".
+#
+# calipers runs under daemon(8), which restarts it if it exits and sends its
+# output to syslog. "service calipers checkconfig" validates the
+# configuration and that every input can start; start and restart do that
+# first. rc.subr passes calipers_env to daemon(8), and calipers inherits it.
+
+. /etc/rc.subr
+
+name=calipers
+rcvar=calipers_enable
+desc="Lightweight system metrics agent with a Prometheus endpoint"
+
+load_rc_config $name
+
+: ${calipers_enable:="NO"}
+: ${calipers_config:="/usr/local/etc/calipers.toml"}
+: ${calipers_flags:=""}
+: ${calipers_user:="root"}
+: ${calipers_env:="RUST_LOG=info"}
+: ${calipers_syslog_tag:="calipers"}
+
+calipers_bin="/usr/local/bin/calipers"
+
+# The pidfile is daemon(8)'s own (-P), so stop/status act on the supervisor,
+# which forwards SIGTERM to calipers instead of restarting it.
+pidfile="/var/run/${name}.pid"
+child_pidfile="/var/run/${name}.child.pid"
+procname="/usr/sbin/daemon"
+command="/usr/sbin/daemon"
+command_args="-f -P ${pidfile} -p ${child_pidfile} -r -R 5 -S -T ${calipers_syslog_tag} \
+    -u ${calipers_user} ${calipers_bin} --config ${calipers_config} ${calipers_flags}"
+
+extra_commands="checkconfig"
+checkconfig_cmd="${name}_checkconfig"
+start_precmd="${name}_checkconfig"
+restart_precmd="${name}_checkconfig"
+
+calipers_checkconfig()
+{
+	if [ ! -x "${calipers_bin}" ]; then
+		err 1 "${calipers_bin} is missing or not executable"
+	fi
+	echo "Checking ${name} configuration ${calipers_config}"
+	"${calipers_bin}" --config "${calipers_config}" --check-config || \
+	    err 1 "invalid configuration, not (re)starting ${name}"
+}
+
+run_rc_command "$1"

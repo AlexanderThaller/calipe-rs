@@ -23,7 +23,7 @@ struct Cli {
     #[arg(short, long, default_value = "/usr/local/etc/calipers.toml")]
     config: PathBuf,
 
-    /// Validate the configuration and exit.
+    /// Validate the configuration and that every input can start, then exit.
     #[arg(long)]
     check_config: bool,
 
@@ -45,23 +45,20 @@ const IDLE_TIMEOUT_INTERVALS: u32 = 3;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    init_logging();
 
     let config = Config::load(&cli.config)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     if cli.check_config {
-        println!("{}: OK", cli.config.display());
+        // Set up every input (open devices, resolve sysctls, compile regexes),
+        // so a config that parses but can't start is rejected too.
+        let collectors = runtime.block_on(async { collectors::build(&config) })?;
+        println!("{}: OK ({} inputs)", cli.config.display(), collectors.len());
         return Ok(());
     }
-
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(run(config, cli.once))
+    runtime.block_on(run(config, cli.once))
 }
 
 async fn run(config: Config, once: bool) -> Result<()> {
@@ -137,6 +134,22 @@ fn describe(scheduled: &[collector::Scheduled]) {
     collector::describe();
     for s in scheduled {
         s.describe();
+    }
+}
+
+/// Logs to stderr. Under daemon(8)/syslog (stderr not a terminal) colors and
+/// timestamps are left out: syslog adds its own timestamps.
+fn init_logging() {
+    use std::io::IsTerminal;
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr);
+    if std::io::stderr().is_terminal() {
+        builder.init();
+    } else {
+        builder.with_ansi(false).without_time().init();
     }
 }
 

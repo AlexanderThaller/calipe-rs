@@ -466,7 +466,7 @@ Dropped Telegraf agent options (they only matter for push outputs or don't apply
   or build on the server itself with `cargo build --release`?
 * Naming: crate `calipe-rs`; binary, service, config file and metric prefix are all `calipers`
   (`[[bin]] name = "calipers"` in `Cargo.toml`).
-* `resources/rc.d/calipers` script (daemon(8), `calipers_enable`, `calipers_config`).
+* `resources/rc.d/calipers` (daemon(8) supervisor with restart and syslog, `checkconfig` before start/restart) and `resources/deploy.sh` (build with the `deploy` profile, validate the config with the new binary, install atomically, restart). See `README.adoc`.
 * Release profile: `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`.
 
 == Milestones

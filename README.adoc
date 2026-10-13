@@ -1,0 +1,61 @@
+= calipe-rs
+
+`calipers` is a lightweight system metrics agent for FreeBSD that exposes a Prometheus endpoint. It
+replaces a Telegraf setup (see `resources/telegraf.conf`) and reads everything in-process through
+sysctl and ioctl: no `zpool`, `pfctl`, `smartctl` or `chronyc` processes. Design notes, metric
+definitions and verification details are in link:dev.adoc[`dev.adoc`].
+
+== Deploy
+
+On the FreeBSD host, as root, from a checkout of this repository:
+
+[source,sh]
+----
+resources/deploy.sh          # build (cargo --profile deploy), install, restart
+sysrc calipers_enable=YES    # first time only
+service calipers start       # first time only
+----
+
+`deploy.sh` installs `/usr/local/bin/calipers` (atomically), `/usr/local/etc/rc.d/calipers`, and the
+example config to `/usr/local/etc/calipers.toml` if none exists yet. Before restarting, the new binary
+checks the existing config and that every input can start (`calipers --check-config`), so a failing
+deploy leaves the running version untouched. `--binary PATH` installs a prebuilt binary,
+`--no-restart` skips the restart.
+
+== Service
+
+`/etc/rc.conf` variables:
+
+[cols="1,2,3"]
+|===
+|Variable |Default |Meaning
+
+|`calipers_enable` |`NO` |Start at boot.
+|`calipers_config` |`/usr/local/etc/calipers.toml` |Configuration file.
+|`calipers_flags` |(empty) |Extra command line flags.
+|`calipers_user` |`root` |User to run as; pf, smart and procstat of other users need root.
+|`calipers_env` |`RUST_LOG=info` |Environment, e.g. `RUST_LOG=calipers=debug`.
+|`calipers_syslog_tag` |`calipers` |Syslog tag.
+|===
+
+calipers runs under daemon(8), which restarts it 5 seconds after an exit and sends its log to syslog
+(`/var/log/messages`). `service calipers checkconfig` validates the configuration.
+
+== Command line
+
+[source]
+----
+calipers [--config PATH] [--check-config] [--once]
+----
+
+* `--check-config`: parse the config and set up every input, then exit.
+* `--once`: collect once, print the metrics to stdout and exit (handy for debugging).
+
+== Development
+
+* `cargo test`, `cargo clippy --all-targets` (Linux) and
+  `cargo clippy --all-targets --target x86_64-unknown-freebsd`.
+* `resources/firecracker/scripts/cross-build.sh build --release` cross-compiles for FreeBSD
+  (clang + lld, FreeBSD base as sysroot; `FREEBSD_VERSION=14.5` for 14.x).
+* Test VMs: `resources/firecracker/` (FreeBSD 15.1, UFS) and `resources/qemu/vm.sh` (FreeBSD 15.1 with
+  ZFS root and emulated SATA/NVMe drives for SMART).
