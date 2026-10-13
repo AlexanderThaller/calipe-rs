@@ -238,6 +238,8 @@ pub fn attribute_name(id: u8) -> &'static str {
         22 => "Helium_Level",
         23 => "Helium_Condition_Lower",
         24 => "Helium_Condition_Upper",
+        // Toshiba MAMR drives (MG10 and later), as named in smartctl's drivedb.
+        27 => "MAMR_Health_Monitor",
         170 | 232 => "Available_Reservd_Space",
         171 => "Program_Fail_Count",
         172 => "Erase_Fail_Count",
@@ -930,6 +932,7 @@ mod tests {
         assert_eq!(power_on, Some(12_345.0 * 3600.0));
         assert_eq!(cycles, Some(42.0));
         assert_eq!(attribute_name(197), "Current_Pending_Sector");
+        assert_eq!(attribute_name(27), "MAMR_Health_Monitor");
     }
 
     #[test]
