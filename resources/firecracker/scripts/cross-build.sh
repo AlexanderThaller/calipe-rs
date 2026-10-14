@@ -23,6 +23,9 @@ fi
 rustup target list --installed | grep -qx "$TARGET" || rustup target add "$TARGET"
 
 export CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_LINKER=clang
+# C dependencies (mimalloc) built by the cc crate need the same target/sysroot.
+export CC_x86_64_unknown_freebsd=clang
+export CFLAGS_x86_64_unknown_freebsd="--target=$TARGET$FREEBSD_VERSION --sysroot=$SYSROOT"
 export CARGO_TARGET_X86_64_UNKNOWN_FREEBSD_RUSTFLAGS="-C link-arg=--target=$TARGET$FREEBSD_VERSION -C link-arg=--sysroot=$SYSROOT -C link-arg=-fuse-ld=lld"
 cmd="${1:-build}"
 [[ $# -gt 0 ]] && shift
