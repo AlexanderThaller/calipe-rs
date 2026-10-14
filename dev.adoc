@@ -449,8 +449,9 @@ and the idle timeout are fixed when the exporter is built, so changes to them ne
 
 Every input except pf has a Linux implementation, deployed on NixOS through the flake's module
 (`nix/module.nix`). The rules are the same as on FreeBSD: no helper processes, procfs/sysfs reads,
-netlink and ioctls only. Metric names are shared where the meaning matches; label values follow
-Linux where the OS differs, so a dashboard works on both for most panels. Metrics a platform doesn't
+netlink and ioctls only. Metric names are shared where the meaning matches; label values use
+Linux's own names (the kernel's, or the tools' where the kernel has none), so a dashboard works on
+both for most panels. Metrics a platform doesn't
 have are absent, not zero.
 
 [cols="1,4"]
@@ -484,8 +485,8 @@ path), `pswpin`/`pswpout` from `/proc/vmstat` times the page size. Matches `swap
 utmp as `who` counts them (0 where nothing writes utmp).
 
 |kernel
-|`/proc/stat` `ctxt`, `intr` and `softirq` totals, and `processes` as
-`kernel_forks_total{type="clone"}` (all new tasks, threads included). No syscall or trap counters
+|`/proc/stat` `ctxt`, `intr` and `softirq` totals as `kernel_interrupts_total{type="irq"|"softirq"}`,
+and `processes` as `kernel_forks_total{type="clone"}` (all new tasks, threads included). No syscall or trap counters
 exist on Linux. Matches `vmstat -s`.
 
 |disk
@@ -498,7 +499,7 @@ tmpfs, devtmpfs and overlay count as real, as in Telegraf. `mode` is `ro` if the
 is read-only. Matches `df -a -B1`.
 
 |diskio
-|`/proc/diskstats`; types read, write, free (discard), other (flush); sectors are 512 bytes. The 32-bit
+|`/proc/diskstats`; types read, write, discard, flush (FreeBSD: free, other); sectors are 512 bytes. The 32-bit
 millisecond times and `io_ticks` are accumulated from wrapping deltas, and a re-attached device
 continues on its old totals. By default only whole disks from `/sys/block`, without loop or ram
 devices that never did I/O; `devices` takes exact names, including partitions. Matches `vmstat -d`.
@@ -521,9 +522,10 @@ calipers' network namespace. Matches `ss -tan` and `ss -s`.
 |processes + procstat
 |`/proc` is listed once per interval and every `/proc/<pid>/stat` read; `/proc/<pid>/status` only for
 processes a query can match (effective UID, VmRSS, context switches), `/proc/<pid>/io` and the
-`/proc/<pid>/fd` directory only for matched ones. States are the proc(5) letters: running (R),
-sleeping (S), blocked (D), idle (I: idle kernel threads, not FreeBSD's "asleep > 20 s"), stopped
-(T, t), zombie (Z), dead (X), parked (P). Names are cut at 15 characters and restored from argv[0];
+`/proc/<pid>/fd` directory only for matched ones. States are the kernel's names from
+`/proc/<pid>/status`: running (R), sleeping (S), disk_sleep (D), idle (I: idle kernel threads, not
+FreeBSD's "asleep > 20 s"), stopped (T), tracing_stop (t), zombie (Z), dead (X), parked (P).
+Context switches are `type="voluntary"|"nonvoluntary"`, as in `status`. Names are cut at 15 characters and restored from argv[0];
 `pattern` matches the cmdline joined by spaces. Storage I/O is
 `procstat_block_io_bytes_total{op}` (`read_bytes`/`write_bytes`, includes reaped children) instead of
 `procstat_block_io_total`. Other users' io and fd need `CAP_SYS_PTRACE`. Matches ps(1), pgrep(1).

@@ -25,10 +25,10 @@
 //! there are no `procstat_open_fds` and the I/O counters stay 0. Names
 //! (`comm`) are cut to 15 characters (`TASK_COMM_LEN`) and restored from
 //! `/proc/<pid>/cmdline` like on FreeBSD. States are those of the process's
-//! main thread, named after proc(5): `running` (R), `sleeping` (S),
-//! `blocked` (D, uninterruptible sleep), `idle` (I, idle kernel threads; not
-//! FreeBSD's "asleep for more than 20 s"), `stopped` (T, and t for tracing
-//! stop), `zombie` (Z), `dead` (X) and `parked` (P).
+//! main thread, with the kernel's names from `/proc/<pid>/status`: `running`
+//! (R), `sleeping` (S), `disk_sleep` (D, uninterruptible), `idle` (I, idle
+//! kernel threads; not FreeBSD's "asleep for more than 20 s"), `stopped` (T),
+//! `tracing_stop` (t), `zombie` (Z), `dead` (X) and `parked` (P).
 
 // The helpers are only used by the platform implementations (and tests).
 #![cfg_attr(
@@ -111,9 +111,15 @@ pub fn describe() {
         "procstat_start_time_seconds",
         "Unix time the (oldest) process started."
     );
+    #[cfg(not(target_os = "linux"))]
     describe_counter!(
         "procstat_context_switches_total",
         "Voluntary and involuntary context switches."
+    );
+    #[cfg(target_os = "linux")]
+    describe_counter!(
+        "procstat_context_switches_total",
+        "Voluntary and nonvoluntary context switches."
     );
     #[cfg(not(target_os = "linux"))]
     describe_counter!(
@@ -181,18 +187,20 @@ pub fn state_char(stat: i8, tdflags: i64, slptime: u32) -> char {
     }
 }
 
-/// Linux `/proc/<pid>/stat` state letters (`fs/proc/array.c`) and the label
-/// names used for them.
+/// Linux `/proc/<pid>/stat` state letters and their names in
+/// `/proc/<pid>/status` (`task_state_array` in `fs/proc/array.c`), with
+/// spaces as underscores.
 #[cfg_attr(
     all(not(target_os = "linux"), not(test)),
     expect(dead_code, reason = "used by the Linux implementation")
 )]
-pub const LINUX_STATES: [(&str, &str); 8] = [
+pub const LINUX_STATES: [(&str, &str); 9] = [
     ("R", "running"),
     ("S", "sleeping"),
     ("I", "idle"),
-    ("D", "blocked"),
-    ("Tt", "stopped"),
+    ("D", "disk_sleep"),
+    ("T", "stopped"),
+    ("t", "tracing_stop"),
     ("Z", "zombie"),
     ("Xx", "dead"),
     ("P", "parked"),
@@ -262,7 +270,7 @@ pub const COUNTERS: [(&str, &str, &str); 6] = [
 #[cfg(target_os = "linux")]
 pub const COUNTERS: [(&str, &str, &str); 6] = [
     ("procstat_context_switches_total", "type", "voluntary"),
-    ("procstat_context_switches_total", "type", "involuntary"),
+    ("procstat_context_switches_total", "type", "nonvoluntary"),
     ("procstat_block_io_bytes_total", "op", "read"),
     ("procstat_block_io_bytes_total", "op", "write"),
     ("procstat_page_faults_total", "type", "major"),
@@ -1304,9 +1312,9 @@ mod tests {
     fn maps_linux_states() {
         let name = |c| linux_state(c).map(|i| LINUX_STATES[i].1);
         assert_eq!(name('R'), Some("running"));
-        assert_eq!(name('D'), Some("blocked"));
+        assert_eq!(name('D'), Some("disk_sleep"));
         assert_eq!(name('I'), Some("idle"));
-        assert_eq!(name('t'), Some("stopped"), "tracing stop");
+        assert_eq!(name('t'), Some("tracing_stop"));
         assert_eq!(name('T'), Some("stopped"));
         assert_eq!(name('x'), Some("dead"));
         assert_eq!(name('W'), None);

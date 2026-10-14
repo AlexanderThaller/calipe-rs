@@ -48,9 +48,15 @@ pub struct Config {
 }
 
 pub fn describe() {
+    #[cfg(not(target_os = "linux"))]
     describe_counter!(
         "diskio_operations_total",
         "Completed requests by type (read, write, free = TRIM/DELETE, other = e.g. cache flush)."
+    );
+    #[cfg(target_os = "linux")]
+    describe_counter!(
+        "diskio_operations_total",
+        "Completed requests by type (read, write, discard, flush)."
     );
     describe_counter!(
         "diskio_bytes_total",
@@ -97,7 +103,12 @@ const DEVSTAT_TYPE_PASS: u32 = 0x100;
 
 /// Transaction types in `bytes[]`/`operations[]`/`duration[]` order
 /// (`devstat_trans_flags`).
+#[cfg(not(target_os = "linux"))]
 pub const TYPES: [&str; 4] = ["other", "read", "write", "free"];
+
+/// The same slots under the names `/proc/diskstats` and the block layer use.
+#[cfg(any(target_os = "linux", test))]
+pub const LINUX_TYPES: [&str; 4] = ["flush", "read", "write", "discard"];
 
 #[cfg(any(target_os = "freebsd", test))]
 #[derive(Debug, Clone, PartialEq)]
@@ -186,8 +197,7 @@ pub fn parse(buf: &[u8]) -> Result<Vec<DevStat>, String> {
     Ok(out)
 }
 
-/// One `/proc/diskstats` line. Arrays are in [`TYPES`] order: flush,
-/// read, write, discard.
+/// One `/proc/diskstats` line. Arrays are in [`LINUX_TYPES`] order.
 #[cfg(any(target_os = "linux", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct DiskStats {
@@ -238,7 +248,7 @@ impl DiskStats {
     /// Whether a request or sector counter dropped since `last`: the device
     /// was re-attached and its counters started over.
     fn restarted_since(&self, last: &Self) -> bool {
-        (0..TYPES.len())
+        (0..LINUX_TYPES.len())
             .any(|i| self.operations[i] < last.operations[i] || self.sectors[i] < last.sectors[i])
     }
 }
@@ -258,7 +268,7 @@ pub struct Totals {
 #[cfg(any(target_os = "linux", test))]
 impl Totals {
     fn add(&mut self, operations: [u64; 4], sectors: [u64; 4], millis: [u64; 4], busy: u64) {
-        for i in 0..TYPES.len() {
+        for i in 0..LINUX_TYPES.len() {
             self.operations[i] = self.operations[i].saturating_add(operations[i]);
             self.bytes[i] = self.bytes[i].saturating_add(sectors[i].saturating_mul(512));
             self.millis[i] = self.millis[i].saturating_add(millis[i]);
@@ -434,7 +444,7 @@ mod linux {
     use super::{
         Config,
         DiskStats,
-        TYPES,
+        LINUX_TYPES,
         Totals,
         describe,
         parse_diskstats,
@@ -533,7 +543,7 @@ mod linux {
                 device.seen = now;
 
                 let totals = &device.totals;
-                for (i, typ) in TYPES.iter().enumerate() {
+                for (i, typ) in LINUX_TYPES.iter().enumerate() {
                     let labels = [("device", name.to_owned()), ("type", (*typ).to_owned())];
                     counter!("diskio_operations_total", &labels).absolute(totals.operations[i]);
                     gauge!("diskio_time_seconds_total", &labels).set(totals.millis[i] as f64 / 1e3);

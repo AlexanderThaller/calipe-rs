@@ -5,8 +5,9 @@
 //! FreeBSD this is new data. All values are 64-bit kernel counters
 //! (`vm.stats.sys.*`, `vm.stats.vm.v_*forks`) exported as real counters.
 //!
-//! Linux source: the `ctxt`, `intr` (total of all hard interrupts),
-//! `softirq` (total) and `processes` lines of `/proc/stat`. Linux counts
+//! Linux source: the `ctxt`, `intr` (total of all hard interrupts,
+//! `type="irq"`), `softirq` (total, `type="softirq"`) and `processes` lines
+//! of `/proc/stat`. Linux counts
 //! every new task in `processes`, threads and kernel threads included, so it
 //! is exported as `kernel_forks_total{type="clone"}`. Linux has no syscall or
 //! trap counters, so those metrics are absent.
@@ -48,8 +49,8 @@ const COUNTERS: [(&str, &str, &str, &str); 9] = [
 #[rustfmt::skip]
 const LINUX_COUNTERS: [(&str, &str, &str, &str); 4] = [
     ("ctxt",      "kernel_context_switches_total", "", ""),
-    ("intr",      "kernel_interrupts_total", "type", "hard"),
-    ("softirq",   "kernel_interrupts_total", "type", "soft"),
+    ("intr",      "kernel_interrupts_total", "type", "irq"),
+    ("softirq",   "kernel_interrupts_total", "type", "softirq"),
     ("processes", "kernel_forks_total", "type", "clone"),
 ];
 
@@ -66,9 +67,15 @@ const FORKS_HELP: &str = "New tasks (processes, threads and kernel threads); typ
 )]
 pub fn describe() {
     describe_counter!("kernel_context_switches_total", "Context switches.");
+    #[cfg(not(target_os = "linux"))]
     describe_counter!(
         "kernel_interrupts_total",
         "Interrupts; type=hard for device interrupts, type=soft for software interrupts."
+    );
+    #[cfg(target_os = "linux")]
+    describe_counter!(
+        "kernel_interrupts_total",
+        "Interrupts; type=irq for hardware interrupts, type=softirq for softirqs."
     );
     #[cfg(not(target_os = "linux"))]
     {
