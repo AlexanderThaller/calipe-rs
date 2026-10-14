@@ -20,7 +20,6 @@ pub fn self_rss_bytes() -> io::Result<u64> {
 
 /// Reads a procfs/sysfs file into `buf`, reusing its allocation. procfs
 /// files report a size of 0, so this reads until EOF.
-#[expect(dead_code, reason = "used as collectors gain Linux implementations")]
 pub fn read_into(path: impl AsRef<Path>, buf: &mut String) -> io::Result<()> {
     buf.clear();
     std::fs::File::open(path)?.read_to_string(buf)?;

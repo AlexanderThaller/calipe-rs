@@ -32,7 +32,6 @@ macro_rules! freebsd_only {
 /// Defines a stand-in for a collector implemented on FreeBSD and Linux whose
 /// constructor fails on other platforms, so enabling it there is a startup
 /// error.
-#[expect(unused_macros, reason = "used as collectors gain Linux implementations")]
 macro_rules! native_only {
     ($ty:ident, $name:literal) => {
         #[cfg(not(any(target_os = "freebsd", target_os = "linux")))]
