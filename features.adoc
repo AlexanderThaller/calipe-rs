@@ -3,7 +3,7 @@
 :icons: font
 
 All inputs from `resources/telegraf.conf` are implemented (see `dev.adoc`). This document lists further
-Telegraf input plugins (247 in total upstream) that are worth implementing for this FreeBSD server,
+Telegraf input plugins (247 in total upstream) that are worth implementing for this FreeBSD server (all inputs except pf also run on Linux),
 plus FreeBSD-only data Telegraf doesn't collect. Not listed: cloud APIs, Kubernetes/Docker, Windows,
 Linux-only hardware interfaces and databases that don't run here.
 
