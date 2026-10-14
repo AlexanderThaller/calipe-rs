@@ -557,8 +557,13 @@ mod freebsd {
         if rc != 0 || result.is_null() {
             return uid.to_string();
         }
-        // SAFETY: getpwuid_r succeeded, so pw_name points into `buf`.
-        unsafe { CStr::from_ptr((*result).pw_name) }
+        // SAFETY: getpwuid_r succeeded, so `result` points at `pwd`.
+        let name = unsafe { (*result).pw_name };
+        if name.is_null() {
+            return uid.to_string();
+        }
+        // SAFETY: a non-null pw_name is a NUL-terminated string in `buf`.
+        unsafe { CStr::from_ptr(name) }
             .to_string_lossy()
             .into_owned()
     }

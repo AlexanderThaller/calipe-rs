@@ -94,23 +94,25 @@ mod freebsd {
     fn users() -> (usize, usize) {
         let mut sessions = 0;
         let mut names = HashSet::new();
-        // SAFETY: the utmpx functions are only called from the collector task,
-        // which runs on a single thread; each returned record is copied out
-        // before the next call reuses the static buffer.
-        unsafe {
-            libc::setutxent();
-            loop {
-                let entry = libc::getutxent();
-                if entry.is_null() {
-                    break;
-                }
-                if (*entry).ut_type == libc::USER_PROCESS {
-                    sessions += 1;
-                    names.insert((*entry).ut_user);
-                }
+        // SAFETY: this is the only caller of the utmpx functions, and
+        // collection is serialized through `&mut self`, so no other thread
+        // touches the shared utmpx state.
+        unsafe { libc::setutxent() };
+        loop {
+            // SAFETY: as above.
+            let entry = unsafe { libc::getutxent() };
+            // SAFETY: getutxent returns NULL or a valid record, which stays
+            // valid until the next utmpx call; we copy what we need first.
+            let Some(entry) = (unsafe { entry.as_ref() }) else {
+                break;
+            };
+            if entry.ut_type == libc::USER_PROCESS {
+                sessions += 1;
+                names.insert(entry.ut_user);
             }
-            libc::endutxent();
         }
+        // SAFETY: as above.
+        unsafe { libc::endutxent() };
         (sessions, names.len())
     }
 

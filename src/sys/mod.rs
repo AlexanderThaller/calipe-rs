@@ -24,15 +24,12 @@ pub fn self_rss_bytes() -> io::Result<u64> {
 /// User and system CPU time consumed by this process, in seconds.
 #[expect(unsafe_code, reason = "getrusage(2) FFI")]
 pub fn self_cpu_seconds() -> io::Result<(f64, f64)> {
-    // SAFETY: `rusage` is plain data; getrusage fully initializes it on
-    // success.
-    let usage = unsafe {
-        let mut usage: libc::rusage = std::mem::zeroed();
-        if libc::getrusage(libc::RUSAGE_SELF, &raw mut usage) != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        usage
-    };
+    // SAFETY: `rusage` is plain data, so all-zero bytes are a valid value.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: `usage` is valid for writes; getrusage fills it on success.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut usage) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
     Ok((timeval_secs(usage.ru_utime), timeval_secs(usage.ru_stime)))
 }
 
