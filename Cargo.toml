@@ -13,6 +13,7 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false, feat
   "http-listener",
 ] }
 metrics-util = { version = "0.20", default-features = false }
+mimalloc = { version = "0.1", features = ["secure"] }
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = [
   "rustls-no-provider",

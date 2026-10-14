@@ -12,8 +12,12 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_util::MetricKindMask;
+use mimalloc::MiMalloc;
 
 use crate::config::Config;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 /// Lightweight system metrics agent exposing a Prometheus endpoint.
 #[derive(Parser)]
@@ -168,12 +172,3 @@ async fn shutdown_signal() -> &'static str {
         _ = int.recv() => "SIGINT",
     }
 }
-
-/// Read by FreeBSD's libc jemalloc at startup. One arena: calipers has about
-/// 1.3 MB live heap, but with the default 4 arenas per CPU each blocking
-/// thread got its own arena, and jemalloc's never-freed base metadata grew
-/// with them (RSS ~28 MB on 4 CPUs, 46+ MB on 16, versus ~16 MB here).
-#[cfg(target_os = "freebsd")]
-#[used]
-#[unsafe(no_mangle)]
-static malloc_conf: &u8 = &b"narenas:1\0"[0];
