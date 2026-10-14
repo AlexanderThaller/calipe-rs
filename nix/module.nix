@@ -34,6 +34,9 @@ in
           agent.interval = "10s";
           exporter.listen = "0.0.0.0:9273";
           inputs = {
+            cpu = { };
+            mem = { };
+            disk.ignore_fs = [ "tmpfs" "devtmpfs" ];
             internal = { };
             http_response = [ { urls = [ "https://example.org" ]; } ];
           };
@@ -41,10 +44,8 @@ in
       '';
       description = ''
         calipers configuration, rendered to TOML. See `resources/calipers.toml`
-        in the calipe-rs repository. On Linux only the `internal`,
-        `http_response`, `dns_query` and `chrony` inputs are available; the
-        others are FreeBSD-only and fail the config check. Ignored when
-        {option}`configFile` is set.
+        in the calipe-rs repository. Every input except `pf` is available on
+        Linux. Ignored when {option}`configFile` is set.
       '';
     };
 
@@ -65,6 +66,29 @@ in
       default = "info";
       example = "calipers=debug";
       description = "Value of `RUST_LOG`.";
+    };
+
+    capabilities = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [
+        # procstat: /proc/<pid>/{io,fd} of other users' processes.
+        "CAP_SYS_PTRACE"
+        "CAP_DAC_READ_SEARCH"
+      ]
+      ++ lib.optionals (cfg.settings ? inputs.smart) [
+        # SG_IO ATA pass-through and NVMe admin commands.
+        "CAP_SYS_RAWIO"
+        "CAP_SYS_ADMIN"
+      ];
+      defaultText = lib.literalMD ''
+        `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`, plus `CAP_SYS_RAWIO` and
+        `CAP_SYS_ADMIN` when {option}`settings` enables the smart input
+      '';
+      description = ''
+        Capabilities calipers keeps; it runs as root with only these. Add
+        `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN` for the smart input when using
+        {option}`configFile`.
+      '';
     };
 
     openFirewall = lib.mkOption {
@@ -107,18 +131,12 @@ in
         Restart = "always";
         RestartSec = 5;
 
-        DynamicUser = true;
-        CapabilityBoundingSet = "";
+        # Root with a reduced capability set instead of DynamicUser: the disk
+        # input needs the host's mount table, so no option may give the unit
+        # its own mount namespace (ProtectSystem, PrivateTmp, PrivateDevices,
+        # ProtectKernel*, ...), and smart and zfs need the device nodes.
+        CapabilityBoundingSet = cfg.capabilities;
         NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = "read-only";
-        PrivateTmp = true;
-        PrivateDevices = true;
-        ProtectKernelTunables = true;
-        ProtectKernelModules = true;
-        ProtectControlGroups = true;
-        ProtectClock = true;
-        ProtectHostname = true;
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"
