@@ -79,11 +79,11 @@ precomputed `usage_*` percentages.
 |Precomputed percentages throw away data between scrapes. `rate()` gives exact averages over any window.
 
 |Latencies
-|Histograms (`histogram!`) with one global set of bucket bounds, 10 µs to 10 s
-(`LATENCY_BUCKETS` in `main.rs`), for probe latencies and `calipers_collector_duration_seconds`.
-Setting buckets makes metrics-exporter-prometheus emit real histograms instead of summaries.
-|Histograms aggregate across series and hosts (`histogram_quantile`, `rate(_sum)/rate(_count)`);
-summary quantiles don't.
+|`histogram!` without configured buckets, so metrics-exporter-prometheus renders summaries
+(quantiles over a rolling window) for probe latencies and `calipers_collector_duration_seconds`.
+|Latencies range from microseconds (collector runtimes) to seconds (network probes); one global
+bucket set would be too coarse for most series. Summary quantiles can't be aggregated across
+series (use `max`), but `rate(_sum)/rate(_count)` still averages correctly.
 
 |Units
 |Base units in names: `_bytes`, `_seconds`, `_celsius`. No milliseconds, no KiB, no pages.

@@ -4230,7 +4230,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "histogram_quantile(0.95, sum by (host, url, le) (rate(http_response_duration_seconds_bucket{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__rate_interval])))",
+              "expr": "max by (host, url) (http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", quantile=\"0.95\"})",
               "refId": "A",
               "legendFormat": "{{host}} {{url}}"
             }
@@ -4291,7 +4291,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "histogram_quantile(0.95, sum by (host, server, le) (rate(dns_query_duration_seconds_bucket{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__rate_interval])))",
+              "expr": "max by (host, server) (dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", quantile=\"0.95\"})",
               "refId": "A",
               "legendFormat": "{{host}} {{server}}"
             }
@@ -4563,7 +4563,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "histogram_quantile(0.99, sum by (collector, le) (rate(calipers_collector_duration_seconds_bucket{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__rate_interval])))",
+              "expr": "max by (collector) (calipers_collector_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", quantile=\"0.99\"})",
               "refId": "A",
               "legendFormat": "{{collector}}"
             }

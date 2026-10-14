@@ -431,10 +431,10 @@ add(
 )
 add(
     ts("HTTP latency p95", [
-        (f'histogram_quantile(0.95, sum by (host, url, le) (rate(http_response_duration_seconds_bucket{{{S}}}[{RI}])))',
+        (f'max by (host, url) (http_response_duration_seconds{{{S}, quantile="0.95"}})',
          "{{host}} {{url}}")], unit="s", x=0, w=12),
     ts("DNS latency p95", [
-        (f'histogram_quantile(0.95, sum by (host, server, le) (rate(dns_query_duration_seconds_bucket{{{S}}}[{RI}])))',
+        (f'max by (host, server) (dns_query_duration_seconds{{{S}, quantile="0.95"}})',
          "{{host}} {{server}}")], unit="s", x=12, w=12),
 )
 
@@ -456,7 +456,7 @@ add(
 row("calipers agent")
 add(
     ts("Collector duration p99", [
-        (f'histogram_quantile(0.99, sum by (collector, le) (rate(calipers_collector_duration_seconds_bucket{{{S}}}[{RI}])))',
+        (f'max by (collector) (calipers_collector_duration_seconds{{{S}, quantile="0.99"}})',
          "{{collector}}")], unit="s", x=0, w=8, desc="Slowest hosts dominate."),
     ts("Collector errors", [
         (f'sum by (host, collector) (increase(calipers_collector_errors_total{{{S}}}[{RI}])) > 0',
