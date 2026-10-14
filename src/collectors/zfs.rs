@@ -15,7 +15,10 @@
 //!   with the same logic `zpool list` uses.
 
 // The helpers are only used by the FreeBSD implementation (and tests).
-#![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 
 use std::time::Duration;
 
@@ -451,6 +454,7 @@ mod freebsd {
             })
         }
 
+        #[expect(unsafe_code, reason = "reinterprets the command buffer as zfs_cmd_t")]
         fn head(&mut self) -> &mut ZfsCmdHead {
             // SAFETY: the buffer is u64-aligned, larger than ZfsCmdHead, and
             // every bit pattern is valid for its integer/array fields.
@@ -459,6 +463,7 @@ mod freebsd {
 
         /// Runs a ZFS ioctl on `name`, returning the output nvlist bytes and
         /// `zc_cookie`. Retries with a bigger buffer on ENOMEM.
+        #[expect(unsafe_code, reason = "ZFS ioctl FFI")]
         fn ioctl(&mut self, request: u8, name: &str, cookie: u64) -> io::Result<(&[u8], u64)> {
             let name = CString::new(name).map_err(io::Error::other)?;
             loop {

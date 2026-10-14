@@ -1,3 +1,12 @@
+#![expect(
+    clippy::cast_precision_loss,
+    reason = "metric values are f64; precision loss above 2^53 is irrelevant for metrics"
+)]
+#![expect(
+    clippy::unused_async_trait_impl,
+    reason = "Collector::collect is async; sysctl-based collectors implement it without awaiting"
+)]
+
 mod collector;
 mod collectors;
 mod config;

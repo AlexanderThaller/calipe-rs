@@ -20,6 +20,7 @@ pub fn self_rss_bytes() -> io::Result<u64> {
 }
 
 /// User and system CPU time consumed by this process, in seconds.
+#[expect(unsafe_code, reason = "getrusage(2) FFI")]
 pub fn self_cpu_seconds() -> io::Result<(f64, f64)> {
     // SAFETY: `rusage` is plain data; getrusage fully initializes it on success.
     let usage = unsafe {
@@ -36,6 +37,7 @@ pub fn timeval_secs(tv: libc::timeval) -> f64 {
     tv.tv_sec as f64 + tv.tv_usec as f64 / 1e6
 }
 
+#[expect(unsafe_code, reason = "gethostname(3) FFI")]
 pub fn hostname() -> io::Result<String> {
     let mut buf = [0u8; 256];
     // SAFETY: the buffer is valid for `buf.len()` bytes; we keep the last byte as NUL.
@@ -46,6 +48,7 @@ pub fn hostname() -> io::Result<String> {
     Ok(name.to_string_lossy().into_owned())
 }
 
+#[expect(unsafe_code, reason = "sysconf(3) FFI")]
 pub fn page_size() -> u64 {
     // SAFETY: sysconf has no preconditions.
     let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };

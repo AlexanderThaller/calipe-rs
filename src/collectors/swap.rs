@@ -9,7 +9,10 @@
 //! device; swapinfo doesn't use it.)
 
 // The helpers are only used by the FreeBSD implementation (and tests).
-#![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 
 use std::time::Duration;
 
@@ -77,6 +80,7 @@ mod freebsd {
     use crate::sys::freebsd::{Mib, Plain, Uint};
 
     // SAFETY: repr(C) struct of integers; padding bytes are never read.
+    #[expect(unsafe_code, reason = "read from vm.swap_info via sysctl")]
     unsafe impl Plain for XswDev {}
 
     pub struct Swap {
@@ -98,6 +102,7 @@ mod freebsd {
     }
 
     /// Device name without `/dev/`, as swapinfo(8) prints it.
+    #[expect(unsafe_code, reason = "devname_r(3) FFI")]
     fn device_name(dev: u64) -> String {
         if dev == u64::MAX {
             // NODEV: swap over NFS.

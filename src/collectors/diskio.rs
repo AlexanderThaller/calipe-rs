@@ -11,7 +11,10 @@
 //! the moment of reading.
 
 // The helpers are only used by the FreeBSD implementation (and tests).
-#![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 
 use std::time::Duration;
 
@@ -196,6 +199,7 @@ mod freebsd {
         }
     }
 
+    #[expect(unsafe_code, reason = "clock_gettime(2) FFI")]
     fn uptime() -> Result<f64> {
         let mut ts = libc::timespec {
             tv_sec: 0,

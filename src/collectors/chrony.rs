@@ -228,12 +228,12 @@ pub struct Chrony {
 }
 
 impl Chrony {
-    pub fn new(config: &Config) -> Result<Self> {
-        Ok(Self {
+    pub fn new(config: &Config) -> Self {
+        Self {
             config: config.clone(),
             // Random-ish start so restarts don't reuse sequence numbers.
             sequence: std::process::id().wrapping_mul(2_654_435_761),
-        })
+        }
     }
 
     async fn query(&mut self) -> Result<Tracking> {

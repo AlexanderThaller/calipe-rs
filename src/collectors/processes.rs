@@ -16,7 +16,10 @@
 //! exiting doesn't make the totals drop.
 
 // The helpers are only used by the FreeBSD implementation (and tests).
-#![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -426,7 +429,7 @@ mod freebsd {
     };
     use crate::collector::Collector;
     use crate::counter::Monotonic;
-    use crate::sys::freebsd::{Mib, cast_slice};
+    use crate::sys::freebsd::{Mib, c_chars_as_bytes, cast_slice};
     use crate::sys::{page_size, timeval_secs};
 
     /// `P_SYSTEM`: kernel processes have no argv.
@@ -497,6 +500,7 @@ mod freebsd {
         }
     }
 
+    #[expect(unsafe_code, reason = "getpwuid_r(3) FFI")]
     fn lookup_user(uid: u32) -> String {
         let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
         let mut buf = [0 as libc::c_char; 1024];
@@ -521,9 +525,7 @@ mod freebsd {
     }
 
     fn cstr(chars: &[libc::c_char]) -> &str {
-        // SAFETY: c_char and u8 have the same size and alignment.
-        let bytes: &[u8] = unsafe { &*(std::ptr::from_ref(chars) as *const [u8]) };
-        CStr::from_bytes_until_nul(bytes)
+        CStr::from_bytes_until_nul(c_chars_as_bytes(chars))
             .ok()
             .and_then(|s| s.to_str().ok())
             .unwrap_or("")

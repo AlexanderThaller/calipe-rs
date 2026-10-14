@@ -17,7 +17,10 @@
 //! Only decoding is supported. Values are borrowed from the input buffer.
 
 // Used by the FreeBSD ZFS collector (and tests).
-#![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 
 use std::fmt;
 
@@ -315,8 +318,11 @@ fn int_array(value: &[u8], typ: u32, nelem: usize) -> Result<Vec<i64>, Error> {
 }
 
 #[cfg(test)]
-// Test fixtures are tiny; the casts can't truncate.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "test fixtures are tiny; the casts can't truncate"
+)]
 pub(crate) mod tests {
     use super::*;
 

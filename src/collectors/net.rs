@@ -11,7 +11,10 @@
 //! interfaces are skipped, like Telegraf.
 
 // The helpers are only used by the FreeBSD implementation (and tests).
-#![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 
 use std::time::Duration;
 
@@ -249,6 +252,10 @@ mod freebsd {
     }
 
     impl Net {
+        #[expect(
+            clippy::unnecessary_wraps,
+            reason = "the non-FreeBSD stub of this constructor fails, so callers expect a Result"
+        )]
         pub fn new(config: &Config) -> Result<Self> {
             Ok(Self {
                 config: config.clone(),

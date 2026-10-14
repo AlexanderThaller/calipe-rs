@@ -61,6 +61,7 @@ allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
 dbg_macro = "warn"
 todo = "warn"
+undocumented_unsafe_blocks = "warn"
 unwrap_used = "warn"
 
 [profile.deploy]

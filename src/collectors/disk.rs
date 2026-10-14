@@ -12,7 +12,10 @@
 //! than `free` by the root reserve and goes negative when root dips into it.
 
 // The helpers are only used by the FreeBSD implementation (and tests).
-#![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 
 use std::time::Duration;
 
@@ -126,6 +129,7 @@ mod freebsd {
 
     use super::{Config, Mount, Usage, describe, device_label};
     use crate::collector::Collector;
+    use crate::sys::freebsd::c_chars_as_bytes;
 
     /// `MNT_RDONLY` from `sys/mount.h`.
     const MNT_RDONLY: u64 = 0x1;
@@ -135,6 +139,10 @@ mod freebsd {
     }
 
     impl Disk {
+        #[expect(
+            clippy::unnecessary_wraps,
+            reason = "the non-FreeBSD stub of this constructor fails, so callers expect a Result"
+        )]
         pub fn new(config: &Config) -> Result<Self> {
             Ok(Self {
                 config: config.clone(),
@@ -143,14 +151,13 @@ mod freebsd {
     }
 
     fn cstr(chars: &[libc::c_char]) -> String {
-        // SAFETY: c_char and u8 have the same size and alignment.
-        let bytes: &[u8] = unsafe { &*(std::ptr::from_ref(chars) as *const [u8]) };
-        CStr::from_bytes_until_nul(bytes)
+        CStr::from_bytes_until_nul(c_chars_as_bytes(chars))
             .map_or_else(|_| String::new(), |s| s.to_string_lossy().into_owned())
     }
 
     /// Lists mounts with `getfsstat(MNT_NOWAIT)`, which doesn't touch the
     /// filesystems themselves.
+    #[expect(unsafe_code, reason = "getfsstat(2) FFI")]
     fn mounts() -> io::Result<Vec<Mount>> {
         loop {
             // SAFETY: a null buffer only returns the number of mounts.
@@ -182,6 +189,7 @@ mod freebsd {
         }
     }
 
+    #[expect(unsafe_code, reason = "statfs(2) FFI")]
     fn usage(path: &str) -> io::Result<Option<Usage>> {
         let cpath = CString::new(path).map_err(io::Error::other)?;
         let mut fs = MaybeUninit::<libc::statfs>::uninit();

@@ -19,7 +19,10 @@
 //! they're exported as gauges: a replaced disk starts over.
 
 // The helpers are only used by the FreeBSD implementation (and tests).
-#![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 
 use std::time::Duration;
 
@@ -381,6 +384,7 @@ mod freebsd {
     use crate::collector::Collector;
     use crate::sys::freebsd::Mib;
 
+    #[expect(unsafe_code, reason = "libcam FFI declarations")]
     #[link(name = "cam")]
     unsafe extern "C" {
         fn cam_open_device(path: *const c_char, flags: c_int) -> *mut c_void;
@@ -427,6 +431,11 @@ mod freebsd {
 
     const ATA_TIMEOUT_MS: u32 = 15_000;
 
+    /// Byte buffer with the alignment of the pointer-bearing kernel structs
+    /// (`union ccb`, `struct nvme_pt_command`) built in it.
+    #[repr(C, align(8))]
+    struct Aligned<const N: usize>([u8; N]);
+
     /// Register values returned by an ATA command.
     struct AtaResult {
         lba_mid: u8,
@@ -440,8 +449,10 @@ mod freebsd {
 
     // SAFETY: the CAM handle is only used by one thread at a time (moved
     // into the blocking task and back).
+    #[expect(unsafe_code, reason = "raw CAM handle")]
     unsafe impl Send for AtaDevice {}
 
+    #[expect(unsafe_code, reason = "cam_close_device FFI")]
     impl Drop for AtaDevice {
         fn drop(&mut self) {
             // SAFETY: `cam` came from cam_open_device and is closed once.
@@ -449,6 +460,7 @@ mod freebsd {
         }
     }
 
+    #[expect(unsafe_code, reason = "cam_open_device and cam_send_ccb FFI")]
     impl AtaDevice {
         fn open(name: &str) -> io::Result<Self> {
             let path = CString::new(name).map_err(io::Error::other)?;
@@ -469,10 +481,8 @@ mod freebsd {
             lba_high: u8,
             data: Option<&mut [u8; 512]>,
         ) -> io::Result<AtaResult> {
-            let mut buf = [0u64; ccb::SIZE / 8];
-            // SAFETY: plain byte view of a u64 buffer.
-            let c =
-                unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<u8>(), ccb::SIZE) };
+            let mut buf = Aligned([0u8; ccb::SIZE]);
+            let c: &mut [u8] = &mut buf.0;
             let put32 =
                 |c: &mut [u8], at: usize, v: u32| c[at..at + 4].copy_from_slice(&v.to_ne_bytes());
             let (dir, ptr, len) = match data {
@@ -497,11 +507,9 @@ mod freebsd {
             cmd[6] = 0x40; // device: LBA mode
             cmd[11] = u8::from(len > 0); // sector count
             // SAFETY: the CCB buffer and the data buffer outlive the call.
-            if unsafe { cam_send_ccb(self.cam, buf.as_mut_ptr().cast()) } < 0 {
+            if unsafe { cam_send_ccb(self.cam, c.as_mut_ptr().cast()) } < 0 {
                 return Err(io::Error::last_os_error());
             }
-            // SAFETY: as above.
-            let c = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), ccb::SIZE) };
             let status = u32::from_ne_bytes(c[ccb::STATUS..ccb::STATUS + 4].try_into().expect("4"));
             if status & ccb::CAM_STATUS_MASK != ccb::CAM_REQ_CMP {
                 return Err(io::Error::other(format!(
@@ -531,11 +539,10 @@ mod freebsd {
             })
         }
 
+        #[expect(unsafe_code, reason = "NVMe passthrough ioctl")]
         fn admin(&self, opc: u8, nsid: u32, cdw10: u32, buf: &mut [u8]) -> io::Result<()> {
-            let mut pt = [0u64; nvme::SIZE / 8];
-            // SAFETY: plain byte view of a u64 buffer.
-            let p =
-                unsafe { std::slice::from_raw_parts_mut(pt.as_mut_ptr().cast::<u8>(), nvme::SIZE) };
+            let mut pt = Aligned([0u8; nvme::SIZE]);
+            let p: &mut [u8] = &mut pt.0;
             p[nvme::OPC] = opc;
             p[nvme::NSID..nvme::NSID + 4].copy_from_slice(&nsid.to_le_bytes());
             p[nvme::CDW10..nvme::CDW10 + 4].copy_from_slice(&cdw10.to_le_bytes());
@@ -544,18 +551,11 @@ mod freebsd {
             p[nvme::LEN..nvme::LEN + 4].copy_from_slice(&len.to_ne_bytes());
             p[nvme::IS_READ..nvme::IS_READ + 4].copy_from_slice(&1u32.to_ne_bytes());
             // SAFETY: `pt` is a valid nvme_pt_command and `buf` outlives the call.
-            if unsafe {
-                libc::ioctl(
-                    self.file.as_raw_fd(),
-                    nvme::PASSTHROUGH_CMD,
-                    pt.as_mut_ptr(),
-                )
-            } != 0
+            if unsafe { libc::ioctl(self.file.as_raw_fd(), nvme::PASSTHROUGH_CMD, p.as_mut_ptr()) }
+                != 0
             {
                 return Err(io::Error::last_os_error());
             }
-            // SAFETY: as above.
-            let p = unsafe { std::slice::from_raw_parts(pt.as_ptr().cast::<u8>(), nvme::SIZE) };
             let status = u16::from_le_bytes([p[nvme::CPL_STATUS], p[nvme::CPL_STATUS + 1]]);
             // nvme_completion_is_error(): status code (bits 1-8) or type (9-11).
             if (status >> 1) & 0xff != 0 || (status >> 9) & 0x7 != 0 {

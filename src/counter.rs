@@ -14,7 +14,10 @@
 //! restarts too) don't need this.
 
 // Used by the FreeBSD collectors (and tests).
-#![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

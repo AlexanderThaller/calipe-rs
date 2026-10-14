@@ -60,10 +60,7 @@ pub fn build(config: &Config) -> anyhow::Result<Vec<Scheduled>> {
     let mut out = Vec::new();
 
     if let Some(c) = &config.inputs.chrony {
-        out.push(Scheduled::new(
-            chrony::Chrony::new(c)?,
-            interval(c.interval),
-        ));
+        out.push(Scheduled::new(chrony::Chrony::new(c), interval(c.interval)));
     }
     if let Some(c) = &config.inputs.cpu {
         out.push(Scheduled::new(cpu::Cpu::new(c)?, interval(c.interval)));

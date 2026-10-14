@@ -14,7 +14,10 @@
 //! nvlist arrays are not needed by any caller and are rejected.
 
 // Used by the FreeBSD pf collector (and tests).
-#![cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#![cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 
 use std::fmt;
 

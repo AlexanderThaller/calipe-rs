@@ -19,7 +19,10 @@ pub struct Config {
 
 /// (sysctl, metric, label name, label value). The label is empty for metrics
 /// without one.
-#[cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 #[rustfmt::skip]
 const COUNTERS: [(&str, &str, &str, &str); 9] = [
     ("vm.stats.sys.v_swtch",   "kernel_context_switches_total", "", ""),
@@ -34,7 +37,10 @@ const COUNTERS: [(&str, &str, &str, &str); 9] = [
 ];
 
 // Only called from the FreeBSD implementation.
-#[cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 pub fn describe() {
     describe_counter!("kernel_context_switches_total", "Context switches.");
     describe_counter!(

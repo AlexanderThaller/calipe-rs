@@ -1,2 +1,3 @@
+doc-valid-idents = ["PromQL", "OpenZFS", "NVMe", ".."]
 allow-dbg-in-tests = true
 allow-unwrap-in-tests = true

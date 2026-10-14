@@ -3,8 +3,10 @@
 //! Names are resolved to MIBs once ([`Mib::new`]); collection then reads by
 //! MIB, which skips the kernel's name lookup on every call.
 
-// Most helpers are used by the sysctl collectors added in later milestones.
-#![allow(dead_code)]
+#![expect(
+    unsafe_code,
+    reason = "safe wrappers around sysctl(3); each unsafe block states its invariant"
+)]
 
 use std::ffi::CString;
 use std::io;
@@ -26,8 +28,11 @@ pub unsafe trait Plain: Copy {}
 
 // SAFETY: primitive integers are valid for every bit pattern.
 unsafe impl Plain for i32 {}
+// SAFETY: as above.
 unsafe impl Plain for u32 {}
+// SAFETY: as above.
 unsafe impl Plain for i64 {}
+// SAFETY: as above.
 unsafe impl Plain for u64 {}
 // SAFETY: arrays of plain types are plain.
 unsafe impl<T: Plain, const N: usize> Plain for [T; N] {}
@@ -36,6 +41,7 @@ unsafe impl<T: Plain, const N: usize> Plain for [T; N] {}
 unsafe impl Plain for libc::kinfo_proc {}
 // SAFETY: repr(C) structs of integers.
 unsafe impl Plain for libc::timeval {}
+// SAFETY: as above.
 unsafe impl Plain for libc::clockinfo {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -302,6 +308,13 @@ pub fn cast_slice<T: Plain>(bytes: &[u8]) -> io::Result<Vec<T>> {
         // SAFETY: each chunk has exactly `size_of::<T>()` bytes; `T: Plain`.
         .map(|chunk| unsafe { ptr::read_unaligned(chunk.as_ptr().cast::<T>()) })
         .collect())
+}
+
+/// Views a fixed-size C `char` array (e.g. `statfs::f_mntonname`) as bytes.
+pub fn c_chars_as_bytes(chars: &[libc::c_char]) -> &[u8] {
+    // SAFETY: c_char and u8 have the same size and alignment, and every bit
+    // pattern is valid for both.
+    unsafe { &*(ptr::from_ref(chars) as *const [u8]) }
 }
 
 /// Reads this process's `kinfo_proc` and returns its RSS.

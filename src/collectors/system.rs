@@ -19,7 +19,10 @@ pub struct Config {
 }
 
 // Only called from the FreeBSD implementation.
-#[cfg_attr(not(target_os = "freebsd"), allow(dead_code))]
+#[cfg_attr(
+    not(target_os = "freebsd"),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 pub fn describe() {
     describe_gauge!("system_load1", "1-minute load average.");
     describe_gauge!("system_load5", "5-minute load average.");
@@ -62,6 +65,7 @@ mod freebsd {
         }
     }
 
+    #[expect(unsafe_code, reason = "getloadavg(3) FFI")]
     fn load_averages() -> io::Result<[f64; 3]> {
         let mut loads = [0f64; 3];
         // SAFETY: `loads` has room for the 3 requested values.
@@ -74,6 +78,7 @@ mod freebsd {
     }
 
     /// (sessions, distinct users) from the utmpx database.
+    #[expect(unsafe_code, reason = "utmpx(3) FFI")]
     fn users() -> (usize, usize) {
         let mut sessions = 0;
         let mut names = HashSet::new();
