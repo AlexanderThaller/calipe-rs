@@ -41,6 +41,13 @@ deploy leaves the running version untouched. `--binary PATH` installs a prebuilt
 calipers runs under daemon(8), which restarts it 5 seconds after an exit and sends its log to syslog
 (`/var/log/messages`). `service calipers checkconfig` validates the configuration.
 
+`service calipers reload` validates the configuration, then sends SIGHUP to calipers, which rereads
+it without restarting. Inputs whose `[inputs.*]` sections are unchanged keep running with their
+state; changed inputs restart, removed ones stop (their series expire after three times the longest interval). If the
+file doesn't parse or an input can't start, nothing changes and the error is logged. A changed
+`agent.interval` restarts every input. `exporter.listen`, `global_tags`, `agent.hostname` and
+`agent.omit_hostname` only take effect after `service calipers restart`; a reload logs a warning.
+
 == Command line
 
 [source]

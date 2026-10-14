@@ -439,6 +439,12 @@ Dropped Telegraf agent options (they only matter for push outputs or don't apply
 `flush_jitter`, `metric_batch_size`, `metric_buffer_limit`, `precision`, `collection_jitter`,
 `round_interval` (we always align to interval boundaries).
 
+Reload on SIGHUP (`runner.rs`): each input is fingerprinted by its raw `[inputs.*]` TOML sections
+plus `agent.interval`. Unchanged inputs keep their task and collector, so per-object state such as
+the `Monotonic` reset offsets survives; new and changed inputs are built first (any failure aborts
+the reload untouched), then old tasks are aborted and new ones spawned. Global labels, the listener
+and the idle timeout are fixed when the exporter is built, so changes to them need a restart.
+
 [[testing]]
 == Testing and verification
 

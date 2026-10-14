@@ -13,20 +13,38 @@ mod config;
 mod counter;
 mod libnv;
 mod nvlist;
+mod runner;
 mod sys;
 
-use std::path::PathBuf;
+use std::{
+    path::{
+        Path,
+        PathBuf,
+    },
+    time::Duration,
+};
 
 use anyhow::{
     Context,
     Result,
 };
 use clap::Parser;
-use metrics_exporter_prometheus::{Matcher, NativeHistogramConfig, PrometheusBuilder};
+use metrics_exporter_prometheus::{
+    Matcher,
+    NativeHistogramConfig,
+    PrometheusBuilder,
+};
 use metrics_util::MetricKindMask;
 use mimalloc::MiMalloc;
+use tokio::signal::unix::{
+    SignalKind,
+    signal,
+};
 
-use crate::config::Config;
+use crate::{
+    config::Config,
+    runner::Collectors,
+};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -80,12 +98,15 @@ fn main() -> Result<()> {
         println!("{}: OK ({} inputs)", cli.config.display(), collectors.len());
         return Ok(());
     }
-    runtime.block_on(run(config, cli.once))
+    if cli.once {
+        return runtime.block_on(run_once(config));
+    }
+    runtime.block_on(run(&cli.config, config))
 }
 
-async fn run(config: Config, once: bool) -> Result<()> {
-    let scheduled = collectors::build(&config)?;
-
+/// The exporter without listener or idle timeout: global labels and native
+/// histograms.
+fn exporter_builder(config: &Config) -> Result<PrometheusBuilder> {
     // Latencies span µs (collector runtimes) to seconds (probes), so use
     // native histograms: exponential buckets fit any range and still
     // aggregate. They are only served in protobuf, not in the text format.
@@ -112,60 +133,115 @@ async fn run(config: Config, once: bool) -> Result<()> {
         };
         builder = builder.add_global_label("host", host);
     }
+    Ok(builder)
+}
 
-    if once {
-        let recorder = builder.build_recorder();
-        let handle = recorder.handle();
-        metrics::set_global_recorder(recorder).context("installing metrics recorder")?;
-        describe(&scheduled);
-        for mut s in scheduled {
-            s.run_once().await;
-        }
-        print!("{}", handle.render());
-        return Ok(());
+async fn run_once(config: Config) -> Result<()> {
+    let scheduled = collectors::build(&config)?;
+    let recorder = exporter_builder(&config)?.build_recorder();
+    let handle = recorder.handle();
+    metrics::set_global_recorder(recorder).context("installing metrics recorder")?;
+    collector::describe();
+    for mut s in scheduled {
+        s.describe();
+        s.run_once().await;
     }
+    print!("{}", handle.render());
+    Ok(())
+}
 
-    let longest = scheduled
-        .iter()
-        .map(collector::Scheduled::interval)
-        .max()
-        .unwrap_or(config.agent.interval);
-    let (recorder, exporter) = builder
+async fn run(path: &Path, config: Config) -> Result<()> {
+    let mut collectors = Collectors::default();
+    let plan = collectors.plan(&config)?;
+    let idle_timeout =
+        plan.longest_interval().unwrap_or(config.agent.interval) * IDLE_TIMEOUT_INTERVALS;
+    let (recorder, exporter) = exporter_builder(&config)?
         .with_http_listener(config.exporter.listen)
-        .idle_timeout(MetricKindMask::ALL, Some(longest * IDLE_TIMEOUT_INTERVALS))
+        .idle_timeout(MetricKindMask::ALL, Some(idle_timeout))
         .build()
         .context("starting Prometheus exporter")?;
     metrics::set_global_recorder(recorder).context("installing metrics recorder")?;
-    describe(&scheduled);
+    collector::describe();
+    collectors.apply(plan);
 
     tracing::info!(
         listen = %config.exporter.listen,
-        collectors = scheduled.len(),
+        collectors = collectors.len(),
         "calipers started"
     );
-    let exporter = tokio::spawn(exporter);
-    for s in scheduled {
-        tokio::spawn(s.run_forever());
-    }
+    let mut exporter = tokio::spawn(exporter);
+    let mut hangup = signal(SignalKind::hangup()).context("installing SIGHUP handler")?;
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
 
-    tokio::select! {
-        result = exporter => match result {
-            Ok(Ok(())) => anyhow::bail!("exporter stopped unexpectedly"),
-            Ok(Err(err)) => anyhow::bail!("exporter failed: {err:?}"),
-            Err(err) => Err(err.into()),
-        },
-        signal = shutdown_signal() => {
-            tracing::info!(signal, "shutting down");
-            Ok(())
+    loop {
+        tokio::select! {
+            result = &mut exporter => match result {
+                Ok(Ok(())) => anyhow::bail!("exporter stopped unexpectedly"),
+                Ok(Err(err)) => anyhow::bail!("exporter failed: {err:?}"),
+                Err(err) => return Err(err.into()),
+            },
+            signal = &mut shutdown => {
+                tracing::info!(signal, "shutting down");
+                return Ok(());
+            }
+            _ = hangup.recv() => reload(path, &config, &mut collectors, idle_timeout),
         }
     }
 }
 
-fn describe(scheduled: &[collector::Scheduled]) {
-    collector::describe();
-    for s in scheduled {
-        s.describe();
+/// Rereads the configuration file and applies changed inputs. On any error
+/// the running collectors stay as they are.
+fn reload(path: &Path, startup: &Config, collectors: &mut Collectors, idle_timeout: Duration) {
+    let planned = Config::load(path).and_then(|config| {
+        let plan = collectors.plan(&config)?;
+        Ok((config, plan))
+    });
+    let (config, plan) = match planned {
+        Ok(planned) => planned,
+        Err(err) => {
+            tracing::error!(error = %format!("{err:#}"), "reload failed, configuration unchanged");
+            return;
+        }
+    };
+    for setting in restart_required(startup, &config) {
+        tracing::warn!(setting, "changed setting takes effect only after a restart");
     }
+    if let Some(longest) = plan.longest_interval()
+        && longest * IDLE_TIMEOUT_INTERVALS > idle_timeout
+    {
+        tracing::warn!(
+            interval = ?longest,
+            idle_timeout = ?idle_timeout,
+            "interval longer than at startup; series may expire between collections until restart"
+        );
+    }
+    let changes = collectors.apply(plan);
+    tracing::info!(
+        started = ?changes.started,
+        restarted = ?changes.restarted,
+        stopped = ?changes.stopped,
+        kept = changes.kept,
+        "configuration reloaded"
+    );
+}
+
+/// Settings fixed when the exporter is built: global labels and the listener.
+fn restart_required(startup: &Config, new: &Config) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    if startup.exporter.listen != new.exporter.listen {
+        changed.push("exporter.listen");
+    }
+    if startup.global_tags != new.global_tags {
+        changed.push("global_tags");
+    }
+    if startup.agent.hostname != new.agent.hostname {
+        changed.push("agent.hostname");
+    }
+    if startup.agent.omit_hostname != new.agent.omit_hostname {
+        changed.push("agent.omit_hostname");
+    }
+    changed
 }
 
 /// Logs to stderr. Under daemon(8)/syslog (stderr not a terminal) colors and
@@ -185,10 +261,6 @@ fn init_logging() {
 }
 
 async fn shutdown_signal() -> &'static str {
-    use tokio::signal::unix::{
-        SignalKind,
-        signal,
-    };
     let mut term = signal(SignalKind::terminate()).expect("installing SIGTERM handler");
     let mut int = signal(SignalKind::interrupt()).expect("installing SIGINT handler");
     tokio::select! {

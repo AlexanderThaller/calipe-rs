@@ -19,8 +19,11 @@
 #
 # calipers runs under daemon(8), which restarts it if it exits and sends its
 # output to syslog. "service calipers checkconfig" validates the
-# configuration and that every input can start; start and restart do that
-# first. rc.subr passes calipers_env to daemon(8), and calipers inherits it.
+# configuration and that every input can start; start, restart and reload do
+# that first. "service calipers reload" sends SIGHUP to calipers (not to
+# daemon(8)), which rereads the configuration: changed inputs restart, the
+# others keep running. exporter.listen, global_tags and the hostname need a
+# restart. rc.subr passes calipers_env to daemon(8), and calipers inherits it.
 
 . /etc/rc.subr
 
@@ -48,10 +51,12 @@ command="/usr/sbin/daemon"
 command_args="-f -P ${pidfile} -p ${child_pidfile} -r -R 5 -S -T ${calipers_syslog_tag} \
     -u ${calipers_user} ${calipers_bin} --config ${calipers_config} ${calipers_flags}"
 
-extra_commands="checkconfig"
+extra_commands="checkconfig reload"
 checkconfig_cmd="${name}_checkconfig"
 start_precmd="${name}_checkconfig"
 restart_precmd="${name}_checkconfig"
+reload_precmd="${name}_checkconfig"
+reload_cmd="${name}_reload"
 
 calipers_checkconfig()
 {
@@ -61,6 +66,14 @@ calipers_checkconfig()
 	echo "Checking ${name} configuration ${calipers_config}"
 	"${calipers_bin}" --config "${calipers_config}" --check-config || \
 	    err 1 "invalid configuration, not (re)starting ${name}"
+}
+
+calipers_reload()
+{
+	if [ ! -s "${child_pidfile}" ]; then
+		err 1 "${name} is not running"
+	fi
+	kill -HUP "$(cat "${child_pidfile}")"
 }
 
 run_rc_command "$1"

@@ -28,6 +28,9 @@ pub struct Config {
     pub exporter: Exporter,
     #[serde(default)]
     pub inputs: Inputs,
+    /// The file as parsed TOML, to tell which inputs changed on reload.
+    #[serde(skip)]
+    pub raw: toml::Table,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,8 +117,9 @@ impl Config {
     }
 
     pub fn parse(text: &str) -> Result<Self> {
-        let config: Self = toml::from_str(text)?;
+        let mut config: Self = toml::from_str(text)?;
         config.validate()?;
+        config.raw = text.parse()?;
         Ok(config)
     }
 
