@@ -1201,7 +1201,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=\"$url\"}[$__rate_interval]))",
+          "expr": "sum(rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=~\"$url\"}[$__rate_interval]))",
           "refId": "A",
           "legendFormat": "__auto"
         }
@@ -1280,7 +1280,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=\"$url\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=~\"$url\"}[$__rate_interval])))",
           "refId": "A",
           "legendFormat": "p50"
         },
@@ -1289,7 +1289,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.9, sum by (url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=\"$url\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by (url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=~\"$url\"}[$__rate_interval])))",
           "refId": "B",
           "legendFormat": "p90"
         },
@@ -1298,7 +1298,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=\"$url\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=~\"$url\"}[$__rate_interval])))",
           "refId": "C",
           "legendFormat": "p99"
         },
@@ -1307,7 +1307,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_sum(sum by (url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=\"$url\"}[$__rate_interval]))) / histogram_count(sum by (url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=\"$url\"}[$__rate_interval])))",
+          "expr": "histogram_sum(sum by (url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=~\"$url\"}[$__rate_interval]))) / histogram_count(sum by (url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", url=~\"$url\"}[$__rate_interval])))",
           "refId": "D",
           "legendFormat": "avg"
         }
@@ -1851,7 +1851,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=\"$server\"}[$__rate_interval]))",
+          "expr": "sum(rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=~\"$server\"}[$__rate_interval]))",
           "refId": "A",
           "legendFormat": "__auto"
         }
@@ -1930,7 +1930,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.5, sum by (record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=\"$server\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=~\"$server\"}[$__rate_interval])))",
           "refId": "A",
           "legendFormat": "{{record_type}} p50"
         },
@@ -1939,7 +1939,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.9, sum by (record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=\"$server\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.9, sum by (record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=~\"$server\"}[$__rate_interval])))",
           "refId": "B",
           "legendFormat": "{{record_type}} p90"
         },
@@ -1948,7 +1948,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=\"$server\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=~\"$server\"}[$__rate_interval])))",
           "refId": "C",
           "legendFormat": "{{record_type}} p99"
         },
@@ -1957,7 +1957,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_sum(sum by (record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=\"$server\"}[$__rate_interval]))) / histogram_count(sum by (record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=\"$server\"}[$__rate_interval])))",
+          "expr": "histogram_sum(sum by (record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=~\"$server\"}[$__rate_interval]))) / histogram_count(sum by (record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", server=~\"$server\"}[$__rate_interval])))",
           "refId": "D",
           "legendFormat": "{{record_type}} avg"
         }

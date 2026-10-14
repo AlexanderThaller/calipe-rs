@@ -120,7 +120,7 @@ add(
 )
 
 repeat_row("HTTP $url", "url")
-U = f'{S}, url="$url"'
+U = f'{S}, url=~"$url"'
 add(
     heatmap("Latency distribution", f'sum(rate({HTTP_DUR}{{{U}}}[{RI}]))', x=0,
             desc="DNS + TCP + TLS + full body. Hover a column for the distribution at that time."),
@@ -153,7 +153,7 @@ add(
 )
 
 repeat_row("DNS $server", "server")
-V = f'{S}, server="$server"'
+V = f'{S}, server=~"$server"'
 add(
     heatmap("Latency distribution", f'sum(rate({DNS_DUR}{{{V}}}[{RI}]))', x=0,
             desc="All domains and record types of this server. Replies only; timeouts are not included."),
