@@ -79,11 +79,13 @@ precomputed `usage_*` percentages.
 |Precomputed percentages throw away data between scrapes. `rate()` gives exact averages over any window.
 
 |Latencies
-|`histogram!` without configured buckets, so metrics-exporter-prometheus renders summaries
-(quantiles over a rolling window) for probe latencies and `calipers_collector_duration_seconds`.
-|Latencies range from microseconds (collector runtimes) to seconds (network probes); one global
-bucket set would be too coarse for most series. Summary quantiles can't be aggregated across
-series (use `max`), but `rate(_sum)/rate(_count)` still averages correctly.
+|Native histograms (`set_native_histogram_for_metric` on `*_duration_seconds`, bucket factor 1.1)
+for probe latencies and `calipers_collector_duration_seconds`. Served only in the protobuf
+exposition format; text scrapes (`curl`, `--once`) omit them.
+|Latencies range from microseconds (collector runtimes) to seconds (network probes). Exponential
+buckets fit every range, unlike one fixed bucket set, and unlike summary quantiles they aggregate
+across series and hosts (`histogram_quantile`, `histogram_sum`/`histogram_count`). Needs
+`scrape_native_histograms` in Prometheus and `native_histograms_ingestion_enabled` in Mimir.
 
 |Units
 |Base units in names: `_bytes`, `_seconds`, `_celsius`. No milliseconds, no KiB, no pages.
@@ -273,7 +275,7 @@ field. Matches `chronyc -c tracking`; config `server`, `timeout`.
 |dns_query
 |Hand-written UDP DNS client (RFC 1035 query with RD; reply accepted only if ID, QR bit and echoed
 question match); all probes of all blocks run concurrently in one collector
-|`dns_query_duration_seconds{server,domain,record_type}` (histogram, replies only),
+|`dns_query_duration_seconds{server,domain,record_type}` (native histogram, replies only),
 `dns_query_total{...,result,rcode}` (result = success, rcode, timeout, error),
 `dns_query_success` (last probe got NOERROR), `dns_query_answers`. Config as in Telegraf: `servers`,
 `domains`, `record_type`, `port`, `timeout` (default 2s).
@@ -282,7 +284,7 @@ question match); all probes of all blocks run concurrently in one collector
 |reqwest 0.13 (`rustls-no-provider` + rustls with ring, system trust store via
 rustls-platform-verifier; no aws-lc), a fresh connection per probe (no keep-alive pool), all URLs
 concurrent
-|`http_response_duration_seconds{url,method}` (histogram: DNS + TCP + TLS + full body),
+|`http_response_duration_seconds{url,method}` (native histogram: DNS + TCP + TLS + full body),
 `http_response_total{url,method,result,status_code}` (result: success, response_status_code_mismatch,
 response_string_mismatch, body_read_error, timeout, dns_error, tls_error, connection_failed, error),
 `http_response_success`, `http_response_status_code`, `http_response_content_length_bytes`,
@@ -321,7 +323,7 @@ gone in 15.x, and netlink `PFNL_CMD_GET_STATUS` only exists in 15.x.
 
 |internal
 |Self
-|`calipers_collector_duration_seconds{collector}` (histogram), `calipers_collector_errors_total{collector}`,
+|`calipers_collector_duration_seconds{collector}` (native histogram), `calipers_collector_errors_total{collector}`,
 `calipers_build_info{version}`, own RSS/CPU
 |===
 

@@ -3745,7 +3745,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "sum by (host, method, url) (rate(http_response_duration_seconds_sum{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__range])) / sum by (host, method, url) (rate(http_response_duration_seconds_count{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__range]))",
+              "expr": "histogram_sum(sum by (host, method, url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__range]))) / histogram_count(sum by (host, method, url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__range])))",
               "refId": "C",
               "legendFormat": "__auto",
               "instant": true,
@@ -4013,7 +4013,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "sum by (host, server, domain, record_type) (rate(dns_query_duration_seconds_sum{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__range])) / sum by (host, server, domain, record_type) (rate(dns_query_duration_seconds_count{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__range]))",
+              "expr": "histogram_sum(sum by (host, server, domain, record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__range]))) / histogram_count(sum by (host, server, domain, record_type) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__range])))",
               "refId": "B",
               "legendFormat": "__auto",
               "instant": true,
@@ -4230,7 +4230,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "max by (host, url) (http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", quantile=\"0.95\"})",
+              "expr": "histogram_quantile(0.95, sum by (host, url) (rate(http_response_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__rate_interval])))",
               "refId": "A",
               "legendFormat": "{{host}} {{url}}"
             }
@@ -4291,7 +4291,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "max by (host, server) (dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", quantile=\"0.95\"})",
+              "expr": "histogram_quantile(0.95, sum by (host, server) (rate(dns_query_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__rate_interval])))",
               "refId": "A",
               "legendFormat": "{{host}} {{server}}"
             }
@@ -4563,7 +4563,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "max by (collector) (calipers_collector_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\", quantile=\"0.99\"})",
+              "expr": "histogram_quantile(0.99, sum by (collector) (rate(calipers_collector_duration_seconds{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"}[$__rate_interval])))",
               "refId": "A",
               "legendFormat": "{{collector}}"
             }

@@ -408,8 +408,8 @@ add(
     table("HTTP probes", [
         (f'max by (host, method, url) (http_response_success{{{S}}})', "Up", "short", None, "color-text"),
         (f'max by (host, method, url) (http_response_status_code{{{S}}})', "Status", "short", None, None),
-        (f'sum by (host, method, url) (rate(http_response_duration_seconds_sum{{{S}}}[$__range]))'
-         f' / sum by (host, method, url) (rate(http_response_duration_seconds_count{{{S}}}[$__range]))',
+        (f'histogram_sum(sum by (host, method, url) (rate(http_response_duration_seconds{{{S}}}[$__range])))'
+         f' / histogram_count(sum by (host, method, url) (rate(http_response_duration_seconds{{{S}}}[$__range])))',
          "Avg latency", "s", steps((0.5, "orange"), (2, "red")), None),
         (f'max by (host, method, url) (http_response_tls_cert_expiry_seconds{{{S}}}) - time()', "Cert expires in",
          "dtdurations", [{"color": "red", "value": None}, {"color": "orange", "value": 14 * 86400},
@@ -420,8 +420,8 @@ add(
         desc="Latency averaged over the selected time range."),
     table("DNS probes", [
         (f'max by (host, server, domain, record_type) (dns_query_success{{{S}}})', "Up", "short", None, "color-text"),
-        (f'sum by (host, server, domain, record_type) (rate(dns_query_duration_seconds_sum{{{S}}}[$__range]))'
-         f' / sum by (host, server, domain, record_type) (rate(dns_query_duration_seconds_count{{{S}}}[$__range]))',
+        (f'histogram_sum(sum by (host, server, domain, record_type) (rate(dns_query_duration_seconds{{{S}}}[$__range])))'
+         f' / histogram_count(sum by (host, server, domain, record_type) (rate(dns_query_duration_seconds{{{S}}}[$__range])))',
          "Avg latency", "s", steps((0.1, "orange"), (1, "red")), None),
         (f'max by (host, server, domain, record_type) (dns_query_answers{{{S}}})', "Answers", "short", None, None),
     ], x=12, w=12, h=9, sort="Avg latency", labels=("host", "server", "domain", "record_type"),
@@ -431,10 +431,10 @@ add(
 )
 add(
     ts("HTTP latency p95", [
-        (f'max by (host, url) (http_response_duration_seconds{{{S}, quantile="0.95"}})',
+        (f'histogram_quantile(0.95, sum by (host, url) (rate(http_response_duration_seconds{{{S}}}[{RI}])))',
          "{{host}} {{url}}")], unit="s", x=0, w=12),
     ts("DNS latency p95", [
-        (f'max by (host, server) (dns_query_duration_seconds{{{S}, quantile="0.95"}})',
+        (f'histogram_quantile(0.95, sum by (host, server) (rate(dns_query_duration_seconds{{{S}}}[{RI}])))',
          "{{host}} {{server}}")], unit="s", x=12, w=12),
 )
 
@@ -456,7 +456,7 @@ add(
 row("calipers agent")
 add(
     ts("Collector duration p99", [
-        (f'max by (collector) (calipers_collector_duration_seconds{{{S}, quantile="0.99"}})',
+        (f'histogram_quantile(0.99, sum by (collector) (rate(calipers_collector_duration_seconds{{{S}}}[{RI}])))',
          "{{collector}}")], unit="s", x=0, w=8, desc="Slowest hosts dominate."),
     ts("Collector errors", [
         (f'sum by (host, collector) (increase(calipers_collector_errors_total{{{S}}}[{RI}])) > 0',

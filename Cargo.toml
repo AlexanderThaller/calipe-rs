@@ -11,6 +11,7 @@ libc = "0.2"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = [
   "http-listener",
+  "protobuf",
 ] }
 metrics-util = { version = "0.20", default-features = false }
 mimalloc = { version = "0.1", features = ["secure"] }

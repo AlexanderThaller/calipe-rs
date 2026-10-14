@@ -22,7 +22,7 @@ use anyhow::{
     Result,
 };
 use clap::Parser;
-use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::{Matcher, NativeHistogramConfig, PrometheusBuilder};
 use metrics_util::MetricKindMask;
 use mimalloc::MiMalloc;
 
@@ -47,6 +47,13 @@ struct Cli {
     #[arg(long)]
     once: bool,
 }
+
+/// Native histogram bucket growth: ~10% relative error (schema 3).
+const NATIVE_HISTOGRAM_BUCKET_FACTOR: f64 = 1.1;
+/// Caps buckets per series; 160 at schema 3 covers 10 µs to 10 s.
+const NATIVE_HISTOGRAM_MAX_BUCKETS: u32 = 160;
+/// Durations at or below 1 ns count as zero.
+const NATIVE_HISTOGRAM_ZERO_THRESHOLD: f64 = 1e-9;
 
 /// Series not updated for this many times the longest collector interval are
 /// dropped, so metrics of vanished processes, disks, etc. disappear.
@@ -79,9 +86,21 @@ fn main() -> Result<()> {
 async fn run(config: Config, once: bool) -> Result<()> {
     let scheduled = collectors::build(&config)?;
 
-    // No buckets: histograms render as summaries, whose quantiles adapt to
-    // each series' range (µs collector runtimes vs. multi-second probes).
-    let mut builder = PrometheusBuilder::new().with_recommended_naming(true);
+    // Latencies span µs (collector runtimes) to seconds (probes), so use
+    // native histograms: exponential buckets fit any range and still
+    // aggregate. They are only served in protobuf, not in the text format.
+    let mut builder = PrometheusBuilder::new()
+        .with_recommended_naming(true)
+        .set_native_histogram_for_metric(
+            Matcher::Suffix("_duration_seconds".to_owned()),
+            NativeHistogramConfig::new(
+                NATIVE_HISTOGRAM_BUCKET_FACTOR,
+                NATIVE_HISTOGRAM_MAX_BUCKETS,
+                NATIVE_HISTOGRAM_ZERO_THRESHOLD,
+            )
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("configuring native histograms")?,
+        );
     for (key, value) in &config.global_tags {
         builder = builder.add_global_label(key, value);
     }
