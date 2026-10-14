@@ -7,10 +7,21 @@
 //! `if_data`, so the parser doesn't depend on the header size. Address
 //! messages in between are skipped.
 //!
+//! Linux source: one rtnetlink `RTM_GETLINK` dump for all interfaces
+//! (`IFLA_IFNAME`, `IFLA_OPERSTATE`, `IFLA_STATS64`), what `ip -s link`
+//! reads, plus `/sys/class/net/<interface>/speed` for the link speed, which
+//! netlink doesn't carry. Linux has no transmitted multicast counter, so
+//! `net_sent_multicast_packets_total` is absent. `net_receive_drops_total` is
+//! `rx_dropped + rx_missed_errors` (packets the NIC dropped for lack of
+//! buffers), as in `/proc/net/dev`. `net_link_up` comes from the RFC 2863
+//! operational state: up is 1, unknown (common for virtual interfaces) is
+//! absent, everything else 0.
+//!
 //! Without an `interfaces` list, loopback and administratively down
 //! interfaces are skipped, like Telegraf.
 
-// The helpers are only used by the FreeBSD implementation (and tests).
+// The routing message parser is only used by the FreeBSD implementation (and
+// tests).
 #![cfg_attr(
     not(target_os = "freebsd"),
     expect(dead_code, reason = "used by the FreeBSD implementation")
@@ -220,19 +231,21 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
 }
 
 impl Config {
-    fn wants(&self, iface: &Interface) -> bool {
+    fn wants(&self, name: &str, up: bool, loopback: bool) -> bool {
         if self.interfaces.is_empty() {
-            iface.up && !iface.loopback
+            up && !loopback
         } else {
-            self.interfaces.iter().any(|p| glob_match(p, &iface.name))
+            self.interfaces.iter().any(|p| glob_match(p, name))
         }
     }
 }
 
-freebsd_only!(Net, "net");
+native_only!(Net, "net");
 
 #[cfg(target_os = "freebsd")]
 pub use freebsd::Net;
+#[cfg(target_os = "linux")]
+pub use linux::Net;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
@@ -296,7 +309,10 @@ mod freebsd {
                 .read_into(&mut self.buf)
                 .context("reading interface list")?;
             let interfaces = parse(&self.buf).map_err(|e| anyhow!("NET_RT_IFLISTL: {e}"))?;
-            for iface in interfaces.into_iter().filter(|i| self.config.wants(i)) {
+            for iface in interfaces
+                .into_iter()
+                .filter(|i| self.config.wants(&i.name, i.up, i.loopback))
+            {
                 // Recreated interfaces (tun, epair, tailscale restarts) start
                 // from zero again.
                 for (metric, value) in iface.counters {
@@ -316,6 +332,273 @@ mod freebsd {
             }
             self.counters.prune();
             Ok(())
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use anyhow::{
+        Context,
+        Result,
+    };
+    use metrics::{
+        counter,
+        gauge,
+    };
+
+    use super::{
+        Config,
+        describe,
+    };
+    use crate::{
+        collector::Collector,
+        counter::Monotonic,
+        sys::linux::{
+            netlink,
+            read_into,
+        },
+    };
+
+    const RTM_NEWLINK: u16 = 16;
+    const RTM_GETLINK: u16 = 18;
+    const IFLA_IFNAME: u16 = 3;
+    const IFLA_OPERSTATE: u16 = 16;
+    const IFLA_STATS64: u16 = 23;
+    const IFF_UP: u32 = 0x1;
+    const IFF_LOOPBACK: u32 = 0x8;
+    const IF_OPER_UNKNOWN: u8 = 0;
+    const IF_OPER_UP: u8 = 6;
+    /// `sizeof (struct ifinfomsg)`.
+    const IFINFOMSG_SIZE: usize = 16;
+
+    /// `struct rtnl_link_stats64` field indexes (in `u64`s).
+    mod stats {
+        pub const RX_PACKETS: usize = 0;
+        pub const TX_PACKETS: usize = 1;
+        pub const RX_BYTES: usize = 2;
+        pub const TX_BYTES: usize = 3;
+        pub const RX_ERRORS: usize = 4;
+        pub const TX_ERRORS: usize = 5;
+        pub const RX_DROPPED: usize = 6;
+        pub const TX_DROPPED: usize = 7;
+        pub const MULTICAST: usize = 8;
+        pub const COLLISIONS: usize = 9;
+        pub const RX_MISSED_ERRORS: usize = 15;
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Interface {
+        pub name: String,
+        pub up: bool,
+        pub loopback: bool,
+        /// `None` when the operational state is unknown.
+        pub link_up: Option<bool>,
+        pub counters: [(&'static str, u64); 10],
+    }
+
+    /// Parses an `RTM_NEWLINK` payload (`struct ifinfomsg` + attributes).
+    pub fn parse_link(payload: &[u8]) -> Option<Interface> {
+        let flags = u32::from_ne_bytes(payload.get(8..12)?.try_into().ok()?);
+        let mut name = None;
+        let mut operstate = IF_OPER_UNKNOWN;
+        let mut stats = None;
+        for (kind, value) in netlink::attributes(payload.get(IFINFOMSG_SIZE..)?) {
+            match kind {
+                IFLA_IFNAME => {
+                    let len = value.iter().position(|&b| b == 0).unwrap_or(value.len());
+                    name = Some(String::from_utf8_lossy(&value[..len]).into_owned());
+                }
+                IFLA_OPERSTATE => operstate = *value.first()?,
+                IFLA_STATS64 => stats = Some(value),
+                _ => {}
+            }
+        }
+        let stats = stats?;
+        let stat = |i: usize| -> Option<u64> {
+            Some(u64::from_ne_bytes(
+                stats.get(i * 8..i * 8 + 8)?.try_into().ok()?,
+            ))
+        };
+        Some(Interface {
+            name: name?,
+            up: flags & IFF_UP != 0,
+            loopback: flags & IFF_LOOPBACK != 0,
+            link_up: match operstate {
+                IF_OPER_UNKNOWN => None,
+                oper => Some(oper == IF_OPER_UP),
+            },
+            counters: [
+                ("net_received_bytes_total", stat(stats::RX_BYTES)?),
+                ("net_sent_bytes_total", stat(stats::TX_BYTES)?),
+                ("net_received_packets_total", stat(stats::RX_PACKETS)?),
+                ("net_sent_packets_total", stat(stats::TX_PACKETS)?),
+                (
+                    "net_received_multicast_packets_total",
+                    stat(stats::MULTICAST)?,
+                ),
+                ("net_receive_errors_total", stat(stats::RX_ERRORS)?),
+                ("net_send_errors_total", stat(stats::TX_ERRORS)?),
+                (
+                    "net_receive_drops_total",
+                    stat(stats::RX_DROPPED)?.wrapping_add(stat(stats::RX_MISSED_ERRORS)?),
+                ),
+                ("net_send_drops_total", stat(stats::TX_DROPPED)?),
+                ("net_collisions_total", stat(stats::COLLISIONS)?),
+            ],
+        })
+    }
+
+    /// `/sys/class/net/<interface>/speed` in bits per second. The file holds
+    /// Mb/s, `-1` when unknown, and fails to read when the link is down or
+    /// the driver has no ethtool support.
+    fn parse_speed(text: &str) -> Option<f64> {
+        let mbps: i64 = text.trim().parse().ok()?;
+        (mbps > 0).then_some(mbps as f64 * 1e6)
+    }
+
+    pub struct Net {
+        config: Config,
+        socket: netlink::Socket,
+        counters: Monotonic,
+        text: String,
+    }
+
+    impl Net {
+        pub fn new(config: &Config) -> Result<Self> {
+            Ok(Self {
+                config: config.clone(),
+                socket: netlink::Socket::new(libc::NETLINK_ROUTE)
+                    .context("opening rtnetlink socket")?,
+                counters: Monotonic::default(),
+                text: String::new(),
+            })
+        }
+    }
+
+    impl Collector for Net {
+        fn name(&self) -> &'static str {
+            "net"
+        }
+
+        fn describe(&self) {
+            describe();
+        }
+
+        async fn collect(&mut self) -> Result<()> {
+            let mut links = Vec::new();
+            let mut malformed = false;
+            // Request: an all-zero `struct ifinfomsg` (any family, all
+            // interfaces).
+            self.socket
+                .dump(RTM_GETLINK, &[0; IFINFOMSG_SIZE], |kind, payload| {
+                    if kind == RTM_NEWLINK {
+                        match parse_link(payload) {
+                            Some(link) => links.push(link),
+                            None => malformed = true,
+                        }
+                    }
+                })
+                .context("dumping interfaces (RTM_GETLINK)")?;
+            if malformed {
+                anyhow::bail!("malformed RTM_NEWLINK message");
+            }
+            for link in links
+                .into_iter()
+                .filter(|l| self.config.wants(&l.name, l.up, l.loopback))
+            {
+                // Recreated interfaces (tun, veth, wireguard restarts) start
+                // from zero again.
+                for (metric, value) in link.counters {
+                    let value = self
+                        .counters
+                        .correct(&format!("{metric}\0{}", link.name), value);
+                    counter!(metric, "interface" => link.name.clone()).absolute(value);
+                }
+                if let Some(up) = link.link_up {
+                    gauge!("net_link_up", "interface" => link.name.clone())
+                        .set(f64::from(u8::from(up)));
+                }
+                let path = format!("/sys/class/net/{}/speed", link.name);
+                if read_into(&path, &mut self.text).is_ok()
+                    && let Some(speed) = parse_speed(&self.text)
+                {
+                    gauge!("net_speed_bits_per_second", "interface" => link.name).set(speed);
+                }
+            }
+            self.counters.prune();
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// `RTM_NEWLINK` payload as the kernel builds it, trimmed to the
+        /// attributes we read plus one we skip (`IFLA_MTU`).
+        fn newlink(name: &str, flags: u32, operstate: u8, stats: &[u64]) -> Vec<u8> {
+            fn attr(kind: u16, value: &[u8]) -> Vec<u8> {
+                let len = u16::try_from(4 + value.len()).unwrap();
+                let mut a = [&len.to_ne_bytes()[..], &kind.to_ne_bytes(), value].concat();
+                a.resize(a.len().next_multiple_of(4), 0);
+                a
+            }
+            let mut ifinfo = vec![0u8; IFINFOMSG_SIZE];
+            ifinfo[8..12].copy_from_slice(&flags.to_ne_bytes());
+            let stats: Vec<u8> = stats.iter().flat_map(|v| v.to_ne_bytes()).collect();
+            [
+                ifinfo,
+                attr(IFLA_IFNAME, &[name.as_bytes(), b"\0"].concat()),
+                attr(4, &1500u32.to_ne_bytes()),
+                attr(IFLA_OPERSTATE, &[operstate]),
+                attr(IFLA_STATS64, &stats),
+            ]
+            .concat()
+        }
+
+        #[test]
+        fn parses_link() {
+            // rx_packets, tx_packets, rx_bytes, tx_bytes, rx_errors,
+            // tx_errors, rx_dropped, tx_dropped, multicast, collisions, ...
+            let mut stats: Vec<u64> = (1..=24).collect();
+            stats[stats::RX_MISSED_ERRORS] = 100;
+            let link = parse_link(&newlink("enp5s0", 0x1003, IF_OPER_UP, &stats)).unwrap();
+            assert_eq!(link.name, "enp5s0");
+            assert!(link.up && !link.loopback);
+            assert_eq!(link.link_up, Some(true));
+            assert_eq!(link.counters[0], ("net_received_bytes_total", 3));
+            assert_eq!(link.counters[3], ("net_sent_packets_total", 2));
+            assert_eq!(
+                link.counters[4],
+                ("net_received_multicast_packets_total", 9)
+            );
+            assert_eq!(
+                link.counters[7],
+                ("net_receive_drops_total", 107),
+                "rx_dropped + rx_missed_errors"
+            );
+            assert_eq!(link.counters[9], ("net_collisions_total", 10));
+
+            let lo = parse_link(&newlink("lo", 0x9, IF_OPER_UNKNOWN, &stats)).unwrap();
+            assert!(lo.loopback);
+            assert_eq!(lo.link_up, None);
+            let down = parse_link(&newlink("eno1", 0x1002, 2, &stats)).unwrap();
+            assert!(!down.up);
+            assert_eq!(down.link_up, Some(false));
+        }
+
+        #[test]
+        fn rejects_incomplete_links() {
+            assert_eq!(parse_link(&newlink("eth0", 1, 6, &[1, 2, 3])), None);
+            assert_eq!(parse_link(&[0; 8]), None);
+        }
+
+        #[test]
+        fn parses_speed() {
+            assert_eq!(parse_speed("1000\n"), Some(1e9));
+            assert_eq!(parse_speed("-1\n"), None);
+            assert_eq!(parse_speed(""), None);
         }
     }
 }
@@ -389,24 +672,18 @@ mod tests {
 
     #[test]
     fn default_filter_and_globs() {
-        let iface = |name: &str, up, loopback| Interface {
-            name: name.into(),
-            up,
-            loopback,
-            ..Default::default()
-        };
         let all: Config = toml::from_str("").unwrap();
-        assert!(all.wants(&iface("igb0", true, false)));
-        assert!(!all.wants(&iface("lo0", true, true)));
-        assert!(!all.wants(&iface("igb1", false, false)));
+        assert!(all.wants("igb0", true, false));
+        assert!(!all.wants("lo0", true, true));
+        assert!(!all.wants("igb1", false, false));
 
         let some: Config = toml::from_str("interfaces = [\"igb*\", \"tailscale?\"]").unwrap();
         assert!(
-            some.wants(&iface("igb1", false, false)),
+            some.wants("igb1", false, false),
             "explicit list includes down interfaces"
         );
-        assert!(some.wants(&iface("tailscale0", true, false)));
-        assert!(!some.wants(&iface("epair0a", true, false)));
+        assert!(some.wants("tailscale0", true, false));
+        assert!(!some.wants("epair0a", true, false));
         assert!(glob_match("*", ""));
         assert!(!glob_match("a?", "a"));
     }

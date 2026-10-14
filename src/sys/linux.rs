@@ -1,4 +1,6 @@
-//! Linux system access: procfs and sysfs files.
+//! Linux system access: procfs and sysfs files, netlink.
+
+pub mod netlink;
 
 use std::{
     io::{
