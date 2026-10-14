@@ -12,16 +12,30 @@
 //! `struct nvme_pt_command`) were taken from the 14.5 and 15.1 headers with
 //! clang's `offsetof` and are identical on both.
 //!
+//! On Linux the same commands take other transports (as smartctl's Linux
+//! backend does):
+//!
+//! * SATA (`sdX` whose SCSI vendor is `ATA`, i.e. behind libata or a SAT
+//!   capable HBA): `SG_IO` on the block device with ATA PASS-THROUGH (16) CDBs.
+//!   Commands whose result is in the registers (CHECK POWER MODE, SMART RETURN
+//!   STATUS) set `CK_COND`, and the registers come back in the sense data (ATA
+//!   Status Return descriptor, or fixed format as libata sends by default).
+//!   Needs `CAP_SYS_RAWIO`, as `ATA_16` isn't on the kernel's list of
+//!   unprivileged SCSI commands.
+//! * NVMe (`nvmeN`): `NVME_IOCTL_ADMIN_CMD` on the controller character device.
+//!   Needs `CAP_SYS_ADMIN`.
+//!
 //! With `nocheck = "standby"` (the default, like Telegraf), a SATA disk in
 //! standby is not read, so monitoring doesn't spin it up.
 //!
 //! SMART values are device state (lifetime totals of the physical disk), so
 //! they're exported as gauges: a replaced disk starts over.
 
-// The helpers are only used by the FreeBSD implementation (and tests).
+// The helpers are only used by the FreeBSD and Linux implementations (and
+// tests).
 #![cfg_attr(
-    not(target_os = "freebsd"),
-    expect(dead_code, reason = "used by the FreeBSD implementation")
+    not(any(target_os = "freebsd", target_os = "linux")),
+    expect(dead_code, reason = "used by the FreeBSD and Linux implementations")
 )]
 
 use std::time::Duration;
@@ -35,7 +49,8 @@ pub struct Config {
     /// Default 60s: SMART data changes slowly, and drives log every query.
     #[serde(default, with = "humantime_serde")]
     pub interval: Option<Duration>,
-    /// Devices to read (e.g. `["ada0", "nvme0"]`); empty means all found.
+    /// Devices to read (e.g. `["ada0", "nvme0"]`, on Linux `["sda", "nvme0"]`);
+    /// empty means all found.
     #[serde(default)]
     pub devices: Vec<String>,
     /// Devices to skip; `/dev/` prefixes are ignored.
@@ -361,28 +376,151 @@ pub fn nvme_health(page: &[u8; 512]) -> NvmeHealth {
     }
 }
 
-freebsd_only!(Smart, "smart");
+/// SCSI/ATA Translation (SAT): ATA PASS-THROUGH (16) CDBs and the ATA
+/// registers in the sense data.
+#[cfg(any(target_os = "linux", test))]
+mod sat {
+    /// ATA registers returned by the SATL.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct Registers {
+        pub error: u8,
+        pub status: u8,
+        pub sector_count: u8,
+        pub lba_mid: u8,
+        pub lba_high: u8,
+    }
+
+    /// SCSI status CHECK CONDITION.
+    const CHECK_CONDITION: u8 = 0x02;
+    /// ASC/ASCQ 00h/1Dh: ATA PASS-THROUGH INFORMATION AVAILABLE.
+    const ATA_INFO_AVAILABLE: (u8, u8) = (0x00, 0x1d);
+    /// ATA status ERR bit.
+    const ATA_STATUS_ERR: u8 = 0x01;
+
+    /// ATA PASS-THROUGH (16) for a 28-bit command: PIO data-in of one
+    /// 512-byte block, or non-data. `ck_cond` asks for the registers in the
+    /// sense data.
+    pub fn pass_through_16(
+        command: u8,
+        features: u8,
+        lba_mid: u8,
+        lba_high: u8,
+        data_in: bool,
+        ck_cond: bool,
+    ) -> [u8; 16] {
+        let mut cdb = [0u8; 16];
+        cdb[0] = 0x85;
+        // PROTOCOL: 4 = PIO data-in, 3 = non-data.
+        cdb[1] = if data_in { 4 << 1 } else { 3 << 1 };
+        // T_DIR = from device, BYTE_BLOCK = blocks, T_LENGTH = in COUNT.
+        cdb[2] = if data_in { 0x0e } else { 0 } | if ck_cond { 0x20 } else { 0 };
+        cdb[4] = features;
+        cdb[6] = u8::from(data_in); // sector count
+        cdb[10] = lba_mid;
+        cdb[12] = lba_high;
+        cdb[13] = 0x40; // device: LBA mode
+        cdb[14] = command;
+        cdb
+    }
+
+    /// The ATA registers from sense data: the ATA Status Return descriptor
+    /// (09h) of descriptor-format sense, or fixed-format sense with ASC/ASCQ
+    /// 00h/1Dh, which libata sends unless descriptor sense is enabled.
+    pub fn registers(sense: &[u8]) -> Option<Registers> {
+        match sense.first()? & 0x7f {
+            0x72 | 0x73 => {
+                let len = usize::from(*sense.get(7)?);
+                let mut descs = sense.get(8..(8 + len).min(sense.len()))?;
+                while let [code, len, ..] = *descs {
+                    let d = descs.get(..2 + usize::from(len))?;
+                    if code == 0x09 && d.len() >= 14 {
+                        return Some(Registers {
+                            error: d[3],
+                            sector_count: d[5],
+                            lba_mid: d[9],
+                            lba_high: d[11],
+                            status: d[13],
+                        });
+                    }
+                    descs = &descs[d.len()..];
+                }
+                None
+            }
+            0x70 | 0x71 => {
+                let s = sense.get(..14)?;
+                ((s[12], s[13]) == ATA_INFO_AVAILABLE).then_some(Registers {
+                    error: s[3],
+                    status: s[4],
+                    sector_count: s[6],
+                    lba_mid: s[10],
+                    lba_high: s[11],
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Sense key, ASC and ASCQ.
+    fn sense_code(sense: &[u8]) -> Option<(u8, u8, u8)> {
+        match sense.first()? & 0x7f {
+            0x72 | 0x73 => Some((sense.get(1)? & 0x0f, *sense.get(2)?, *sense.get(3)?)),
+            0x70 | 0x71 => Some((sense.get(2)? & 0x0f, *sense.get(12)?, *sense.get(13)?)),
+            _ => None,
+        }
+    }
+
+    /// Interprets the SCSI status and sense data of a pass-through command.
+    /// `Ok(None)`: success without registers (GOOD status, nothing in the
+    /// sense buffer).
+    pub fn outcome(scsi_status: u8, sense: &[u8]) -> Result<Option<Registers>, String> {
+        let regs = registers(sense);
+        match scsi_status & 0x7e {
+            0 => {}
+            CHECK_CONDITION => {
+                // NO SENSE or RECOVERED ERROR carry the registers of a
+                // completed command; anything else is a failure.
+                let code = sense_code(sense);
+                if !matches!(code, Some((0 | 1, ..))) || regs.is_none() {
+                    return Err(match code {
+                        Some((key, asc, ascq)) => format!(
+                            "check condition (sense key {key:#x}, ASC/ASCQ {asc:#04x}/{ascq:#04x})"
+                        ),
+                        None => "check condition without sense data".to_owned(),
+                    });
+                }
+            }
+            status => return Err(format!("SCSI status {status:#x}")),
+        }
+        match regs {
+            Some(r) if r.status & ATA_STATUS_ERR != 0 => Err(format!(
+                "ATA error (status {:#x}, error {:#x})",
+                r.status, r.error
+            )),
+            regs => Ok(regs),
+        }
+    }
+}
+
+native_only!(Smart, "smart");
+
+#[cfg(any(target_os = "freebsd", target_os = "linux"))]
+pub use native::Smart;
 
 #[cfg(target_os = "freebsd")]
-pub use freebsd::Smart;
+use freebsd as platform;
+#[cfg(target_os = "linux")]
+use linux as platform;
 
-#[cfg(target_os = "freebsd")]
-mod freebsd {
+/// Reading and exporting, shared by the platforms; [`platform`] supplies
+/// device discovery and the command transports.
+#[cfg(any(target_os = "freebsd", target_os = "linux"))]
+mod native {
     use std::{
         collections::HashMap,
-        ffi::{
-            CString,
-            c_char,
-            c_int,
-            c_void,
-        },
-        fs::File,
         io,
-        os::fd::AsRawFd,
     };
 
     use anyhow::{
-        Context,
         Result,
         anyhow,
     };
@@ -400,231 +538,19 @@ mod freebsd {
         describe,
         nvme_health,
         nvme_identity,
+        platform::{
+            AtaDevice,
+            NvmeDevice,
+            discover,
+        },
     };
-    use crate::{
-        collector::Collector,
-        sys::freebsd::Mib,
-    };
-
-    #[expect(unsafe_code, reason = "libcam FFI declarations")]
-    #[link(name = "cam")]
-    unsafe extern "C" {
-        fn cam_open_device(path: *const c_char, flags: c_int) -> *mut c_void;
-        fn cam_close_device(dev: *mut c_void);
-        fn cam_send_ccb(dev: *mut c_void, ccb: *mut c_void) -> c_int;
-    }
-
-    /// `union ccb` layout (identical in 14.5 and 15.1 headers).
-    mod ccb {
-        /// `sizeof(union ccb)`.
-        pub const SIZE: usize = 1248;
-        /// The CCB buffer we pass. `CAMIOCOMMAND` copies the *installed*
-        /// libcam's `sizeof(union ccb)` in and out, so a newer release with a
-        /// larger CCB must not overrun our buffer.
-        pub const BUF_SIZE: usize = 4096;
-        const _: () = assert!(SIZE <= BUF_SIZE);
-        pub const RETRY_COUNT: usize = 64;
-        pub const FUNC_CODE: usize = 80;
-        pub const STATUS: usize = 84;
-        pub const FLAGS: usize = 112;
-        pub const TIMEOUT: usize = 176;
-        pub const CMD: usize = 208;
-        pub const RES: usize = 222;
-        pub const DATA_PTR: usize = 240;
-        pub const DXFER_LEN: usize = 248;
-        pub const ATA_FLAGS: usize = 256;
-        pub const XPT_ATA_IO: u32 = 0x918;
-        pub const CAM_DIR_IN: u32 = 0x40;
-        pub const CAM_DIR_NONE: u32 = 0xc0;
-        pub const CAM_DEV_QFRZDIS: u32 = 0x400;
-        pub const CAM_REQ_CMP: u32 = 0x1;
-        pub const CAM_STATUS_MASK: u32 = 0x3f;
-        pub const CAM_ATAIO_NEEDRESULT: u8 = 0x08;
-    }
-
-    /// `struct nvme_pt_command` layout and `NVME_PASSTHROUGH_CMD`.
-    mod nvme {
-        pub const SIZE: usize = 104;
-        pub const OPC: usize = 0;
-        pub const NSID: usize = 4;
-        pub const CDW10: usize = 40;
-        pub const CPL_STATUS: usize = 64 + 14;
-        pub const BUF: usize = 80;
-        pub const LEN: usize = 88;
-        pub const IS_READ: usize = 92;
-        pub const PASSTHROUGH_CMD: libc::c_ulong = 0xc068_6e00;
-        pub const OPC_GET_LOG_PAGE: u8 = 0x02;
-        pub const OPC_IDENTIFY: u8 = 0x06;
-    }
-
-    const ATA_TIMEOUT_MS: u32 = 15_000;
-
-    /// Byte buffer with the alignment of the pointer-bearing kernel structs
-    /// (`union ccb`, `struct nvme_pt_command`) built in it.
-    #[repr(C, align(8))]
-    struct Aligned<const N: usize>([u8; N]);
+    use crate::collector::Collector;
 
     /// Register values returned by an ATA command.
-    struct AtaResult {
-        lba_mid: u8,
-        lba_high: u8,
-        sector_count: u8,
-    }
-
-    struct AtaDevice {
-        cam: *mut c_void,
-    }
-
-    // SAFETY: the CAM handle is only used by one thread at a time (moved
-    // into the blocking task and back).
-    #[expect(unsafe_code, reason = "raw CAM handle")]
-    unsafe impl Send for AtaDevice {}
-
-    #[expect(unsafe_code, reason = "cam_close_device FFI")]
-    impl Drop for AtaDevice {
-        fn drop(&mut self) {
-            // SAFETY: `cam` came from cam_open_device and is closed once.
-            unsafe { cam_close_device(self.cam) };
-        }
-    }
-
-    #[expect(unsafe_code, reason = "cam_open_device and cam_send_ccb FFI")]
-    impl AtaDevice {
-        fn open(name: &str) -> io::Result<Self> {
-            let path = CString::new(name).map_err(io::Error::other)?;
-            // SAFETY: valid C string; returns NULL on failure.
-            let cam = unsafe { cam_open_device(path.as_ptr(), libc::O_RDWR) };
-            if cam.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(Self { cam })
-        }
-
-        /// Sends one PIO data-in (512 bytes) or non-data ATA command.
-        fn command(
-            &mut self,
-            command: u8,
-            features: u8,
-            lba_mid: u8,
-            lba_high: u8,
-            data: Option<&mut [u8; 512]>,
-        ) -> io::Result<AtaResult> {
-            let mut buf = Aligned([0u8; ccb::BUF_SIZE]);
-            let c: &mut [u8] = &mut buf.0;
-            let put32 =
-                |c: &mut [u8], at: usize, v: u32| c[at..at + 4].copy_from_slice(&v.to_ne_bytes());
-            let (dir, ptr, len) = match data {
-                Some(d) => (ccb::CAM_DIR_IN, d.as_mut_ptr(), 512u32),
-                None => (ccb::CAM_DIR_NONE, std::ptr::null_mut(), 0),
-            };
-            // cam_fill_ataio()
-            put32(c, ccb::FUNC_CODE, ccb::XPT_ATA_IO);
-            put32(c, ccb::FLAGS, dir | ccb::CAM_DEV_QFRZDIS);
-            c[ccb::RETRY_COUNT..ccb::RETRY_COUNT + 2].copy_from_slice(&0u16.to_ne_bytes());
-            put32(c, ccb::TIMEOUT, ATA_TIMEOUT_MS);
-            c[ccb::DATA_PTR..ccb::DATA_PTR + 8].copy_from_slice(&(ptr as u64).to_ne_bytes());
-            put32(c, ccb::DXFER_LEN, len);
-            c[ccb::ATA_FLAGS] = 0;
-            // struct ata_cmd
-            let cmd = &mut c[ccb::CMD..ccb::CMD + 14];
-            cmd[0] = ccb::CAM_ATAIO_NEEDRESULT;
-            cmd[1] = command;
-            cmd[2] = features;
-            cmd[4] = lba_mid;
-            cmd[5] = lba_high;
-            cmd[6] = 0x40; // device: LBA mode
-            cmd[11] = u8::from(len > 0); // sector count
-            // SAFETY: the CCB buffer and the data buffer outlive the call.
-            if unsafe { cam_send_ccb(self.cam, c.as_mut_ptr().cast()) } < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let status = u32::from_ne_bytes(c[ccb::STATUS..ccb::STATUS + 4].try_into().expect("4"));
-            if status & ccb::CAM_STATUS_MASK != ccb::CAM_REQ_CMP {
-                return Err(io::Error::other(format!(
-                    "ATA command {command:#x} failed (CAM status {status:#x})"
-                )));
-            }
-            let res = &c[ccb::RES..ccb::RES + 12];
-            Ok(AtaResult {
-                lba_mid: res[4],
-                lba_high: res[5],
-                sector_count: res[10],
-            })
-        }
-    }
-
-    struct NvmeDevice {
-        file: File,
-    }
-
-    impl NvmeDevice {
-        fn open(name: &str) -> io::Result<Self> {
-            Ok(Self {
-                file: File::options()
-                    .read(true)
-                    .write(true)
-                    .open(format!("/dev/{name}"))?,
-            })
-        }
-
-        /// IDENTIFY with CNS 1 (controller), which always returns 4 KiB.
-        #[expect(unsafe_code, reason = "calls the unsafe admin()")]
-        fn identify_controller(&self, buf: &mut [u8; 4096]) -> io::Result<()> {
-            // SAFETY: the controller data structure is exactly 4096 bytes.
-            unsafe { self.admin(nvme::OPC_IDENTIFY, 0, 1, buf) }
-        }
-
-        /// GET LOG PAGE 02h (SMART / health), global namespace.
-        #[expect(unsafe_code, reason = "calls the unsafe admin()")]
-        fn health_log(&self, buf: &mut [u8; 512]) -> io::Result<()> {
-            // NUMDL: dwords to transfer minus one, for the 512-byte `buf`.
-            const NUMDL: u32 = 512 / 4 - 1;
-            // SAFETY: NUMDL requests exactly `buf.len()` bytes.
-            unsafe {
-                self.admin(
-                    nvme::OPC_GET_LOG_PAGE,
-                    0xffff_ffff,
-                    (NUMDL << 16) | 0x02,
-                    buf,
-                )
-            }
-        }
-
-        /// Runs a data-in admin command into `buf`.
-        ///
-        /// # Safety
-        ///
-        /// The command must transfer at most `buf.len()` bytes. The kernel
-        /// only maps `buf.len()` bytes, but the device's transfer size comes
-        /// from `opc`/`cdw10`, and a larger transfer can DMA past `buf`.
-        #[expect(unsafe_code, reason = "NVMe passthrough ioctl")]
-        unsafe fn admin(&self, opc: u8, nsid: u32, cdw10: u32, buf: &mut [u8]) -> io::Result<()> {
-            let mut pt = Aligned([0u8; nvme::SIZE]);
-            let p: &mut [u8] = &mut pt.0;
-            p[nvme::OPC] = opc;
-            p[nvme::NSID..nvme::NSID + 4].copy_from_slice(&nsid.to_le_bytes());
-            p[nvme::CDW10..nvme::CDW10 + 4].copy_from_slice(&cdw10.to_le_bytes());
-            p[nvme::BUF..nvme::BUF + 8].copy_from_slice(&(buf.as_mut_ptr() as u64).to_ne_bytes());
-            let len = u32::try_from(buf.len()).map_err(io::Error::other)?;
-            p[nvme::LEN..nvme::LEN + 4].copy_from_slice(&len.to_ne_bytes());
-            p[nvme::IS_READ..nvme::IS_READ + 4].copy_from_slice(&1u32.to_ne_bytes());
-            // SAFETY: `pt` is a valid nvme_pt_command, `buf` outlives the call,
-            // and the caller guarantees the transfer fits in `buf`.
-            if unsafe { libc::ioctl(self.file.as_raw_fd(), nvme::PASSTHROUGH_CMD, p.as_mut_ptr()) }
-                != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            let status = u16::from_le_bytes([p[nvme::CPL_STATUS], p[nvme::CPL_STATUS + 1]]);
-            // nvme_completion_is_error(): status code (bits 1-8) or type
-            // (9-11).
-            if (status >> 1) & 0xff != 0 || (status >> 9) & 0x7 != 0 {
-                return Err(io::Error::other(format!(
-                    "NVMe admin command {opc:#x} failed (status {status:#x})"
-                )));
-            }
-            Ok(())
-        }
+    pub struct AtaResult {
+        pub lba_mid: u8,
+        pub lba_high: u8,
+        pub sector_count: u8,
     }
 
     enum Device {
@@ -650,27 +576,6 @@ mod freebsd {
                 devices: HashMap::new(),
             })
         }
-    }
-
-    /// SATA disks from `kern.disks`, NVMe controllers from `/dev/nvmeN`.
-    fn discover() -> Result<Vec<String>> {
-        let disks = Mib::new("kern.disks")?.read_string()?;
-        let mut names: Vec<String> = disks
-            .split_whitespace()
-            .filter(|d| d.starts_with("ada"))
-            .map(str::to_owned)
-            .collect();
-        for entry in std::fs::read_dir("/dev")? {
-            let name = entry?.file_name().to_string_lossy().into_owned();
-            if name
-                .strip_prefix("nvme")
-                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-            {
-                names.push(name);
-            }
-        }
-        names.sort();
-        Ok(names)
     }
 
     /// Everything read from one device in one collection.
@@ -751,15 +656,9 @@ mod freebsd {
             let result = (|| -> Result<Reading> {
                 if !devices.contains_key(&name) {
                     let dev = if name.starts_with("nvme") {
-                        Device::Nvme(
-                            NvmeDevice::open(&name)
-                                .with_context(|| format!("opening /dev/{name}"))?,
-                        )
+                        Device::Nvme(NvmeDevice::open(&name)?)
                     } else {
-                        Device::Ata(
-                            AtaDevice::open(&name)
-                                .with_context(|| format!("opening {name} via CAM"))?,
-                        )
+                        Device::Ata(AtaDevice::open(&name)?)
                     };
                     devices.insert(name.clone(), dev);
                 }
@@ -914,6 +813,545 @@ mod freebsd {
     }
 }
 
+#[cfg(target_os = "freebsd")]
+mod freebsd {
+    use std::{
+        ffi::{
+            CString,
+            c_char,
+            c_int,
+            c_void,
+        },
+        fs::File,
+        io,
+        os::fd::AsRawFd,
+    };
+
+    use anyhow::{
+        Context,
+        Result,
+    };
+
+    use super::native::AtaResult;
+    use crate::sys::freebsd::Mib;
+
+    #[expect(unsafe_code, reason = "libcam FFI declarations")]
+    #[link(name = "cam")]
+    unsafe extern "C" {
+        fn cam_open_device(path: *const c_char, flags: c_int) -> *mut c_void;
+        fn cam_close_device(dev: *mut c_void);
+        fn cam_send_ccb(dev: *mut c_void, ccb: *mut c_void) -> c_int;
+    }
+
+    /// `union ccb` layout (identical in 14.5 and 15.1 headers).
+    mod ccb {
+        /// `sizeof(union ccb)`.
+        pub const SIZE: usize = 1248;
+        /// The CCB buffer we pass. `CAMIOCOMMAND` copies the *installed*
+        /// libcam's `sizeof(union ccb)` in and out, so a newer release with a
+        /// larger CCB must not overrun our buffer.
+        pub const BUF_SIZE: usize = 4096;
+        const _: () = assert!(SIZE <= BUF_SIZE);
+        pub const RETRY_COUNT: usize = 64;
+        pub const FUNC_CODE: usize = 80;
+        pub const STATUS: usize = 84;
+        pub const FLAGS: usize = 112;
+        pub const TIMEOUT: usize = 176;
+        pub const CMD: usize = 208;
+        pub const RES: usize = 222;
+        pub const DATA_PTR: usize = 240;
+        pub const DXFER_LEN: usize = 248;
+        pub const ATA_FLAGS: usize = 256;
+        pub const XPT_ATA_IO: u32 = 0x918;
+        pub const CAM_DIR_IN: u32 = 0x40;
+        pub const CAM_DIR_NONE: u32 = 0xc0;
+        pub const CAM_DEV_QFRZDIS: u32 = 0x400;
+        pub const CAM_REQ_CMP: u32 = 0x1;
+        pub const CAM_STATUS_MASK: u32 = 0x3f;
+        pub const CAM_ATAIO_NEEDRESULT: u8 = 0x08;
+    }
+
+    /// `struct nvme_pt_command` layout and `NVME_PASSTHROUGH_CMD`.
+    mod nvme {
+        pub const SIZE: usize = 104;
+        pub const OPC: usize = 0;
+        pub const NSID: usize = 4;
+        pub const CDW10: usize = 40;
+        pub const CPL_STATUS: usize = 64 + 14;
+        pub const BUF: usize = 80;
+        pub const LEN: usize = 88;
+        pub const IS_READ: usize = 92;
+        pub const PASSTHROUGH_CMD: libc::c_ulong = 0xc068_6e00;
+        pub const OPC_GET_LOG_PAGE: u8 = 0x02;
+        pub const OPC_IDENTIFY: u8 = 0x06;
+    }
+
+    const ATA_TIMEOUT_MS: u32 = 15_000;
+
+    /// Byte buffer with the alignment of the pointer-bearing kernel structs
+    /// (`union ccb`, `struct nvme_pt_command`) built in it.
+    #[repr(C, align(8))]
+    struct Aligned<const N: usize>([u8; N]);
+
+    pub struct AtaDevice {
+        cam: *mut c_void,
+    }
+
+    // SAFETY: the CAM handle is only used by one thread at a time (moved
+    // into the blocking task and back).
+    #[expect(unsafe_code, reason = "raw CAM handle")]
+    unsafe impl Send for AtaDevice {}
+
+    #[expect(unsafe_code, reason = "cam_close_device FFI")]
+    impl Drop for AtaDevice {
+        fn drop(&mut self) {
+            // SAFETY: `cam` came from cam_open_device and is closed once.
+            unsafe { cam_close_device(self.cam) };
+        }
+    }
+
+    #[expect(unsafe_code, reason = "cam_open_device and cam_send_ccb FFI")]
+    impl AtaDevice {
+        pub fn open(name: &str) -> Result<Self> {
+            let open = || {
+                let path = CString::new(name).map_err(io::Error::other)?;
+                // SAFETY: valid C string; returns NULL on failure.
+                let cam = unsafe { cam_open_device(path.as_ptr(), libc::O_RDWR) };
+                if cam.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(Self { cam })
+            };
+            open().with_context(|| format!("opening {name} via CAM"))
+        }
+
+        /// Sends one PIO data-in (512 bytes) or non-data ATA command.
+        pub fn command(
+            &mut self,
+            command: u8,
+            features: u8,
+            lba_mid: u8,
+            lba_high: u8,
+            data: Option<&mut [u8; 512]>,
+        ) -> io::Result<AtaResult> {
+            let mut buf = Aligned([0u8; ccb::BUF_SIZE]);
+            let c: &mut [u8] = &mut buf.0;
+            let put32 =
+                |c: &mut [u8], at: usize, v: u32| c[at..at + 4].copy_from_slice(&v.to_ne_bytes());
+            let (dir, ptr, len) = match data {
+                Some(d) => (ccb::CAM_DIR_IN, d.as_mut_ptr(), 512u32),
+                None => (ccb::CAM_DIR_NONE, std::ptr::null_mut(), 0),
+            };
+            // cam_fill_ataio()
+            put32(c, ccb::FUNC_CODE, ccb::XPT_ATA_IO);
+            put32(c, ccb::FLAGS, dir | ccb::CAM_DEV_QFRZDIS);
+            c[ccb::RETRY_COUNT..ccb::RETRY_COUNT + 2].copy_from_slice(&0u16.to_ne_bytes());
+            put32(c, ccb::TIMEOUT, ATA_TIMEOUT_MS);
+            c[ccb::DATA_PTR..ccb::DATA_PTR + 8].copy_from_slice(&(ptr as u64).to_ne_bytes());
+            put32(c, ccb::DXFER_LEN, len);
+            c[ccb::ATA_FLAGS] = 0;
+            // struct ata_cmd
+            let cmd = &mut c[ccb::CMD..ccb::CMD + 14];
+            cmd[0] = ccb::CAM_ATAIO_NEEDRESULT;
+            cmd[1] = command;
+            cmd[2] = features;
+            cmd[4] = lba_mid;
+            cmd[5] = lba_high;
+            cmd[6] = 0x40; // device: LBA mode
+            cmd[11] = u8::from(len > 0); // sector count
+            // SAFETY: the CCB buffer and the data buffer outlive the call.
+            if unsafe { cam_send_ccb(self.cam, c.as_mut_ptr().cast()) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let status = u32::from_ne_bytes(c[ccb::STATUS..ccb::STATUS + 4].try_into().expect("4"));
+            if status & ccb::CAM_STATUS_MASK != ccb::CAM_REQ_CMP {
+                return Err(io::Error::other(format!(
+                    "ATA command {command:#x} failed (CAM status {status:#x})"
+                )));
+            }
+            let res = &c[ccb::RES..ccb::RES + 12];
+            Ok(AtaResult {
+                lba_mid: res[4],
+                lba_high: res[5],
+                sector_count: res[10],
+            })
+        }
+    }
+
+    pub struct NvmeDevice {
+        file: File,
+    }
+
+    impl NvmeDevice {
+        pub fn open(name: &str) -> Result<Self> {
+            Ok(Self {
+                file: File::options()
+                    .read(true)
+                    .write(true)
+                    .open(format!("/dev/{name}"))
+                    .with_context(|| format!("opening /dev/{name}"))?,
+            })
+        }
+
+        /// IDENTIFY with CNS 1 (controller), which always returns 4 KiB.
+        #[expect(unsafe_code, reason = "calls the unsafe admin()")]
+        pub fn identify_controller(&self, buf: &mut [u8; 4096]) -> io::Result<()> {
+            // SAFETY: the controller data structure is exactly 4096 bytes.
+            unsafe { self.admin(nvme::OPC_IDENTIFY, 0, 1, buf) }
+        }
+
+        /// GET LOG PAGE 02h (SMART / health), global namespace.
+        #[expect(unsafe_code, reason = "calls the unsafe admin()")]
+        pub fn health_log(&self, buf: &mut [u8; 512]) -> io::Result<()> {
+            // NUMDL: dwords to transfer minus one, for the 512-byte `buf`.
+            const NUMDL: u32 = 512 / 4 - 1;
+            // SAFETY: NUMDL requests exactly `buf.len()` bytes.
+            unsafe {
+                self.admin(
+                    nvme::OPC_GET_LOG_PAGE,
+                    0xffff_ffff,
+                    (NUMDL << 16) | 0x02,
+                    buf,
+                )
+            }
+        }
+
+        /// Runs a data-in admin command into `buf`.
+        ///
+        /// # Safety
+        ///
+        /// The command must transfer at most `buf.len()` bytes. The kernel
+        /// only maps `buf.len()` bytes, but the device's transfer size comes
+        /// from `opc`/`cdw10`, and a larger transfer can DMA past `buf`.
+        #[expect(unsafe_code, reason = "NVMe passthrough ioctl")]
+        unsafe fn admin(&self, opc: u8, nsid: u32, cdw10: u32, buf: &mut [u8]) -> io::Result<()> {
+            let mut pt = Aligned([0u8; nvme::SIZE]);
+            let p: &mut [u8] = &mut pt.0;
+            p[nvme::OPC] = opc;
+            p[nvme::NSID..nvme::NSID + 4].copy_from_slice(&nsid.to_le_bytes());
+            p[nvme::CDW10..nvme::CDW10 + 4].copy_from_slice(&cdw10.to_le_bytes());
+            p[nvme::BUF..nvme::BUF + 8].copy_from_slice(&(buf.as_mut_ptr() as u64).to_ne_bytes());
+            let len = u32::try_from(buf.len()).map_err(io::Error::other)?;
+            p[nvme::LEN..nvme::LEN + 4].copy_from_slice(&len.to_ne_bytes());
+            p[nvme::IS_READ..nvme::IS_READ + 4].copy_from_slice(&1u32.to_ne_bytes());
+            // SAFETY: `pt` is a valid nvme_pt_command, `buf` outlives the call,
+            // and the caller guarantees the transfer fits in `buf`.
+            if unsafe { libc::ioctl(self.file.as_raw_fd(), nvme::PASSTHROUGH_CMD, p.as_mut_ptr()) }
+                != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let status = u16::from_le_bytes([p[nvme::CPL_STATUS], p[nvme::CPL_STATUS + 1]]);
+            // nvme_completion_is_error(): status code (bits 1-8) or type
+            // (9-11).
+            if (status >> 1) & 0xff != 0 || (status >> 9) & 0x7 != 0 {
+                return Err(io::Error::other(format!(
+                    "NVMe admin command {opc:#x} failed (status {status:#x})"
+                )));
+            }
+            Ok(())
+        }
+    }
+
+    /// SATA disks from `kern.disks`, NVMe controllers from `/dev/nvmeN`.
+    pub fn discover() -> Result<Vec<String>> {
+        let disks = Mib::new("kern.disks")?.read_string()?;
+        let mut names: Vec<String> = disks
+            .split_whitespace()
+            .filter(|d| d.starts_with("ada"))
+            .map(str::to_owned)
+            .collect();
+        for entry in std::fs::read_dir("/dev")? {
+            let name = entry?.file_name().to_string_lossy().into_owned();
+            if name
+                .strip_prefix("nvme")
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::{
+        ffi::c_void,
+        fs::File,
+        io,
+        os::{
+            fd::AsRawFd,
+            unix::fs::OpenOptionsExt,
+        },
+    };
+
+    use anyhow::{
+        Context,
+        Result,
+    };
+
+    use super::{
+        native::AtaResult,
+        sat,
+    };
+
+    /// `struct sg_io_hdr` from `<scsi/sg.h>`.
+    #[repr(C)]
+    struct SgIoHdr {
+        interface_id: i32,
+        dxfer_direction: i32,
+        cmd_len: u8,
+        mx_sb_len: u8,
+        iovec_count: u16,
+        dxfer_len: u32,
+        dxferp: *mut c_void,
+        cmdp: *const u8,
+        sbp: *mut u8,
+        timeout: u32,
+        flags: u32,
+        pack_id: i32,
+        usr_ptr: *mut c_void,
+        status: u8,
+        masked_status: u8,
+        msg_status: u8,
+        sb_len_wr: u8,
+        host_status: u16,
+        driver_status: u16,
+        resid: i32,
+        duration: u32,
+        info: u32,
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    const _: () = assert!(size_of::<SgIoHdr>() == 88);
+
+    const SG_IO: libc::c_ulong = 0x2285;
+    const SG_DXFER_NONE: i32 = -1;
+    const SG_DXFER_FROM_DEV: i32 = -3;
+    /// `driver_status` bits other than `DRIVER_SENSE` (0x08) mean the
+    /// request failed in the driver.
+    const DRIVER_STATUS_MASK: u16 = 0x0f;
+    const DRIVER_SENSE: u16 = 0x08;
+
+    /// `struct nvme_passthru_cmd` (`nvme_admin_cmd`) from
+    /// `<linux/nvme_ioctl.h>`.
+    #[repr(C)]
+    #[derive(Default)]
+    struct NvmePassthruCmd {
+        opcode: u8,
+        flags: u8,
+        rsvd1: u16,
+        nsid: u32,
+        cdw2: u32,
+        cdw3: u32,
+        metadata: u64,
+        addr: u64,
+        metadata_len: u32,
+        data_len: u32,
+        cdw10: u32,
+        cdw11: u32,
+        cdw12: u32,
+        cdw13: u32,
+        cdw14: u32,
+        cdw15: u32,
+        timeout_ms: u32,
+        result: u32,
+    }
+
+    const _: () = assert!(size_of::<NvmePassthruCmd>() == 72);
+
+    /// `_IOWR('N', 0x41, struct nvme_admin_cmd)`.
+    const NVME_IOCTL_ADMIN_CMD: libc::c_ulong = 0xc048_4e41;
+    const OPC_GET_LOG_PAGE: u8 = 0x02;
+    const OPC_IDENTIFY: u8 = 0x06;
+
+    const ATA_TIMEOUT_MS: u32 = 15_000;
+
+    pub struct AtaDevice {
+        file: File,
+    }
+
+    impl AtaDevice {
+        pub fn open(name: &str) -> Result<Self> {
+            // O_NONBLOCK: don't wait for removable media, like sg_utils.
+            let file = File::options()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(format!("/dev/{name}"))
+                .with_context(|| format!("opening /dev/{name}"))?;
+            Ok(Self { file })
+        }
+
+        /// Sends one PIO data-in (512 bytes) or non-data ATA command as ATA
+        /// PASS-THROUGH (16). Non-data commands ask for the registers.
+        #[expect(unsafe_code, reason = "SG_IO ioctl")]
+        pub fn command(
+            &mut self,
+            command: u8,
+            features: u8,
+            lba_mid: u8,
+            lba_high: u8,
+            data: Option<&mut [u8; 512]>,
+        ) -> io::Result<AtaResult> {
+            let data_in = data.is_some();
+            let cdb = sat::pass_through_16(command, features, lba_mid, lba_high, data_in, !data_in);
+            let mut sense = [0u8; 64];
+            let (direction, ptr, len) = match data {
+                Some(d) => (SG_DXFER_FROM_DEV, d.as_mut_ptr().cast(), 512),
+                None => (SG_DXFER_NONE, std::ptr::null_mut(), 0),
+            };
+            let mut hdr = SgIoHdr {
+                interface_id: i32::from(b'S'),
+                dxfer_direction: direction,
+                cmd_len: 16,
+                mx_sb_len: 64,
+                iovec_count: 0,
+                dxfer_len: len,
+                dxferp: ptr,
+                cmdp: cdb.as_ptr(),
+                sbp: sense.as_mut_ptr(),
+                timeout: ATA_TIMEOUT_MS,
+                flags: 0,
+                pack_id: 0,
+                usr_ptr: std::ptr::null_mut(),
+                status: 0,
+                masked_status: 0,
+                msg_status: 0,
+                sb_len_wr: 0,
+                host_status: 0,
+                driver_status: 0,
+                resid: 0,
+                duration: 0,
+                info: 0,
+            };
+            // SAFETY: `hdr` is a valid sg_io_hdr; the CDB, sense and data
+            // buffers it points to outlive the call and have the lengths
+            // given in it.
+            if unsafe { libc::ioctl(self.file.as_raw_fd(), SG_IO, &raw mut hdr) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let failed =
+                |what: String| io::Error::other(format!("ATA command {command:#x} failed: {what}"));
+            if hdr.host_status != 0 {
+                return Err(failed(format!("host status {:#x}", hdr.host_status)));
+            }
+            let driver = hdr.driver_status & DRIVER_STATUS_MASK;
+            if driver != 0 && driver != DRIVER_SENSE {
+                return Err(failed(format!("driver status {:#x}", hdr.driver_status)));
+            }
+            let sense = &sense[..usize::from(hdr.sb_len_wr).min(sense.len())];
+            let regs = sat::outcome(hdr.status, sense).map_err(failed)?;
+            match regs {
+                Some(r) => Ok(AtaResult {
+                    lba_mid: r.lba_mid,
+                    lba_high: r.lba_high,
+                    sector_count: r.sector_count,
+                }),
+                None if data_in => Ok(AtaResult {
+                    lba_mid: 0,
+                    lba_high: 0,
+                    sector_count: 0,
+                }),
+                None => Err(failed("no ATA registers returned".to_owned())),
+            }
+        }
+    }
+
+    pub struct NvmeDevice {
+        file: File,
+    }
+
+    impl NvmeDevice {
+        pub fn open(name: &str) -> Result<Self> {
+            Ok(Self {
+                file: File::open(format!("/dev/{name}"))
+                    .with_context(|| format!("opening /dev/{name}"))?,
+            })
+        }
+
+        /// IDENTIFY with CNS 1 (controller), which always returns 4 KiB.
+        #[expect(unsafe_code, reason = "calls the unsafe admin()")]
+        pub fn identify_controller(&self, buf: &mut [u8; 4096]) -> io::Result<()> {
+            // SAFETY: the controller data structure is exactly 4096 bytes.
+            unsafe { self.admin(OPC_IDENTIFY, 0, 1, buf) }
+        }
+
+        /// GET LOG PAGE 02h (SMART / health), global namespace.
+        #[expect(unsafe_code, reason = "calls the unsafe admin()")]
+        pub fn health_log(&self, buf: &mut [u8; 512]) -> io::Result<()> {
+            // NUMDL: dwords to transfer minus one, for the 512-byte `buf`.
+            const NUMDL: u32 = 512 / 4 - 1;
+            // SAFETY: NUMDL requests exactly `buf.len()` bytes.
+            unsafe { self.admin(OPC_GET_LOG_PAGE, 0xffff_ffff, (NUMDL << 16) | 0x02, buf) }
+        }
+
+        /// Runs a data-in admin command into `buf`.
+        ///
+        /// # Safety
+        ///
+        /// The command must transfer at most `buf.len()` bytes: the device's
+        /// transfer size comes from `opc`/`cdw10`, not from `data_len`.
+        #[expect(unsafe_code, reason = "NVMe admin ioctl")]
+        unsafe fn admin(&self, opc: u8, nsid: u32, cdw10: u32, buf: &mut [u8]) -> io::Result<()> {
+            let mut cmd = NvmePassthruCmd {
+                opcode: opc,
+                nsid,
+                addr: buf.as_mut_ptr() as u64,
+                data_len: u32::try_from(buf.len()).map_err(io::Error::other)?,
+                cdw10,
+                ..NvmePassthruCmd::default()
+            };
+            // SAFETY: `cmd` is a valid nvme_passthru_cmd, `buf` outlives the
+            // call, and the caller guarantees the transfer fits in `buf`.
+            let ret =
+                unsafe { libc::ioctl(self.file.as_raw_fd(), NVME_IOCTL_ADMIN_CMD, &raw mut cmd) };
+            match ret {
+                0 => Ok(()),
+                // A positive return is the NVMe status field of the completion.
+                status if status > 0 => Err(io::Error::other(format!(
+                    "NVMe admin command {opc:#x} failed (status {status:#x})"
+                ))),
+                _ => Err(io::Error::last_os_error()),
+            }
+        }
+    }
+
+    /// SATA disks (SCSI disks whose vendor is `ATA`, i.e. behind libata or a
+    /// SATL) from `/sys/block`, NVMe controllers from `/sys/class/nvme`.
+    pub fn discover() -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir("/sys/block").context("listing /sys/block")? {
+            let name = entry?.file_name().to_string_lossy().into_owned();
+            if name.starts_with("sd")
+                && std::fs::read_to_string(format!("/sys/block/{name}/device/vendor"))
+                    .is_ok_and(|vendor| vendor.trim() == "ATA")
+            {
+                names.push(name);
+            }
+        }
+        match std::fs::read_dir("/sys/class/nvme") {
+            Ok(dir) => {
+                for entry in dir {
+                    let name = entry?.file_name().to_string_lossy().into_owned();
+                    if name
+                        .strip_prefix("nvme")
+                        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+                    {
+                        names.push(name);
+                    }
+                }
+            }
+            // No NVMe driver loaded.
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err).context("listing /sys/class/nvme"),
+        }
+        names.sort();
+        Ok(names)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1021,6 +1459,86 @@ mod tests {
         assert_eq!(h.data_units_read, 1000);
         assert_eq!(h.power_on_hours, 5000);
         assert_eq!(h.warning_temp_minutes, 7);
+    }
+
+    #[test]
+    fn builds_ata_pass_through_cdbs() {
+        // SMART READ DATA: PIO data-in, one block, LBA mid/high 4F/C2.
+        assert_eq!(
+            sat::pass_through_16(0xb0, 0xd0, 0x4f, 0xc2, true, false),
+            [
+                0x85, 0x08, 0x0e, 0, 0xd0, 0, 1, 0, 0, 0, 0x4f, 0, 0xc2, 0x40, 0xb0, 0
+            ]
+        );
+        // CHECK POWER MODE: non-data with CK_COND.
+        assert_eq!(
+            sat::pass_through_16(0xe5, 0, 0, 0, false, true),
+            [
+                0x85, 0x06, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0xe5, 0
+            ]
+        );
+    }
+
+    /// Sense data as libata builds it for a `CK_COND` command: recovered
+    /// error, ASC/ASCQ 00h/1Dh.
+    fn descriptor_sense(count: u8, mid: u8, high: u8, status: u8) -> Vec<u8> {
+        let mut s = vec![0x72, 0x01, 0x00, 0x1d, 0, 0, 0, 14];
+        s.extend([
+            0x09, 0x0c, 0, 0, 0, count, 0, 0, 0, mid, 0, high, 0x40, status,
+        ]);
+        s
+    }
+
+    fn fixed_sense(count: u8, mid: u8, high: u8, status: u8) -> Vec<u8> {
+        let mut s = vec![0xf0, 0, 0x01, 0, status, 0x40, count, 10, 0, 0, mid, high];
+        s.extend([0x00, 0x1d, 0, 0, 0, 0]);
+        s
+    }
+
+    #[test]
+    fn reads_registers_from_sense() {
+        let ok = sat::Registers {
+            error: 0,
+            status: 0x50,
+            sector_count: 0xff,
+            lba_mid: 0x4f,
+            lba_high: 0xc2,
+        };
+        for sense in [
+            descriptor_sense(0xff, 0x4f, 0xc2, 0x50),
+            fixed_sense(0xff, 0x4f, 0xc2, 0x50),
+        ] {
+            assert_eq!(sat::registers(&sense), Some(ok));
+            assert_eq!(sat::outcome(0x02, &sense), Ok(Some(ok)));
+        }
+        // An unrelated descriptor before the ATA one is skipped.
+        let mut skip = descriptor_sense(0, 0xf4, 0x2c, 0x50);
+        skip.splice(8..8, [0x00, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        skip[7] += 12;
+        assert_eq!(
+            sat::registers(&skip).map(|r| (r.lba_mid, r.lba_high)),
+            Some((0xf4, 0x2c))
+        );
+        // Truncated or other sense data carries no registers.
+        assert_eq!(sat::registers(&descriptor_sense(0, 0, 0, 0)[..12]), None);
+        let mut other = fixed_sense(0, 0, 0, 0);
+        other[13] = 0;
+        assert_eq!(sat::registers(&other), None);
+        assert_eq!(sat::registers(&[]), None);
+    }
+
+    #[test]
+    fn interprets_pass_through_outcome() {
+        assert_eq!(sat::outcome(0, &[]), Ok(None), "GOOD without sense");
+        // The command failed: ATA status ERR, error ABRT.
+        let mut aborted = descriptor_sense(0, 0, 0, 0x51);
+        aborted[11] = 0x04;
+        assert!(sat::outcome(0x02, &aborted).is_err_and(|e| e.contains("error 0x4")));
+        // ILLEGAL REQUEST, e.g. a SATL without ATA pass-through.
+        let illegal = [0x70, 0, 0x05, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0x20, 0x00];
+        assert!(sat::outcome(0x02, &illegal).is_err_and(|e| e.contains("sense key 0x5")));
+        assert!(sat::outcome(0x02, &[]).is_err());
+        assert!(sat::outcome(0x18, &[]).is_err(), "reservation conflict");
     }
 
     #[test]
