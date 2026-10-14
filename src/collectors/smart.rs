@@ -416,7 +416,13 @@ mod freebsd {
 
     /// `union ccb` layout (identical in 14.5 and 15.1 headers).
     mod ccb {
+        /// `sizeof(union ccb)`.
         pub const SIZE: usize = 1248;
+        /// The CCB buffer we pass. `CAMIOCOMMAND` copies the *installed*
+        /// libcam's `sizeof(union ccb)` in and out, so a newer release with a
+        /// larger CCB must not overrun our buffer.
+        pub const BUF_SIZE: usize = 4096;
+        const _: () = assert!(SIZE <= BUF_SIZE);
         pub const RETRY_COUNT: usize = 64;
         pub const FUNC_CODE: usize = 80;
         pub const STATUS: usize = 84;
@@ -503,7 +509,7 @@ mod freebsd {
             lba_high: u8,
             data: Option<&mut [u8; 512]>,
         ) -> io::Result<AtaResult> {
-            let mut buf = Aligned([0u8; ccb::SIZE]);
+            let mut buf = Aligned([0u8; ccb::BUF_SIZE]);
             let c: &mut [u8] = &mut buf.0;
             let put32 =
                 |c: &mut [u8], at: usize, v: u32| c[at..at + 4].copy_from_slice(&v.to_ne_bytes());
@@ -561,8 +567,38 @@ mod freebsd {
             })
         }
 
+        /// IDENTIFY with CNS 1 (controller), which always returns 4 KiB.
+        #[expect(unsafe_code, reason = "calls the unsafe admin()")]
+        fn identify_controller(&self, buf: &mut [u8; 4096]) -> io::Result<()> {
+            // SAFETY: the controller data structure is exactly 4096 bytes.
+            unsafe { self.admin(nvme::OPC_IDENTIFY, 0, 1, buf) }
+        }
+
+        /// GET LOG PAGE 02h (SMART / health), global namespace.
+        #[expect(unsafe_code, reason = "calls the unsafe admin()")]
+        fn health_log(&self, buf: &mut [u8; 512]) -> io::Result<()> {
+            // NUMDL: dwords to transfer minus one, for the 512-byte `buf`.
+            const NUMDL: u32 = 512 / 4 - 1;
+            // SAFETY: NUMDL requests exactly `buf.len()` bytes.
+            unsafe {
+                self.admin(
+                    nvme::OPC_GET_LOG_PAGE,
+                    0xffff_ffff,
+                    (NUMDL << 16) | 0x02,
+                    buf,
+                )
+            }
+        }
+
+        /// Runs a data-in admin command into `buf`.
+        ///
+        /// # Safety
+        ///
+        /// The command must transfer at most `buf.len()` bytes. The kernel
+        /// only maps `buf.len()` bytes, but the device's transfer size comes
+        /// from `opc`/`cdw10`, and a larger transfer can DMA past `buf`.
         #[expect(unsafe_code, reason = "NVMe passthrough ioctl")]
-        fn admin(&self, opc: u8, nsid: u32, cdw10: u32, buf: &mut [u8]) -> io::Result<()> {
+        unsafe fn admin(&self, opc: u8, nsid: u32, cdw10: u32, buf: &mut [u8]) -> io::Result<()> {
             let mut pt = Aligned([0u8; nvme::SIZE]);
             let p: &mut [u8] = &mut pt.0;
             p[nvme::OPC] = opc;
@@ -572,8 +608,8 @@ mod freebsd {
             let len = u32::try_from(buf.len()).map_err(io::Error::other)?;
             p[nvme::LEN..nvme::LEN + 4].copy_from_slice(&len.to_ne_bytes());
             p[nvme::IS_READ..nvme::IS_READ + 4].copy_from_slice(&1u32.to_ne_bytes());
-            // SAFETY: `pt` is a valid nvme_pt_command and `buf` outlives the
-            // call.
+            // SAFETY: `pt` is a valid nvme_pt_command, `buf` outlives the call,
+            // and the caller guarantees the transfer fits in `buf`.
             if unsafe { libc::ioctl(self.file.as_raw_fd(), nvme::PASSTHROUGH_CMD, p.as_mut_ptr()) }
                 != 0
             {
@@ -688,18 +724,12 @@ mod freebsd {
     }
 
     fn read_nvme(dev: &NvmeDevice) -> io::Result<Reading> {
-        let mut identify = vec![0u8; 4096];
-        dev.admin(nvme::OPC_IDENTIFY, 0, 1, &mut identify)?; // CNS 1: controller
+        let mut identify = Box::new([0u8; 4096]);
+        dev.identify_controller(&mut identify)?;
         let mut page = [0u8; 512];
-        // Log page 0x02, global namespace, NUMDL = 512/4 - 1.
-        dev.admin(
-            nvme::OPC_GET_LOG_PAGE,
-            0xffff_ffff,
-            (127 << 16) | 0x02,
-            &mut page,
-        )?;
+        dev.health_log(&mut page)?;
         Ok(Reading::Nvme {
-            identity: nvme_identity(&identify),
+            identity: nvme_identity(&identify[..]),
             health: nvme_health(&page),
         })
     }

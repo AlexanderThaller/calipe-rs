@@ -191,7 +191,10 @@ mod freebsd {
                 // Possibly truncated; the mount table grew. Try again.
                 continue;
             }
-            // SAFETY: the kernel filled the first `n` entries.
+            // getfsstat never reports more entries than fit.
+            assert!(n < capacity, "getfsstat overran its buffer");
+            // SAFETY: the kernel filled the first `n` entries, which fit in
+            // the capacity.
             unsafe { buf.set_len(n) };
             return Ok(buf
                 .iter()

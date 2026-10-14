@@ -462,6 +462,9 @@ mod freebsd {
     const _: () = assert!(std::mem::offset_of!(ZfsCmdHead, nvlist_dst) == 1040);
     const _: () = assert!(std::mem::offset_of!(ZfsCmdHead, cookie) == 3400);
     const _: () = assert!(size_of::<IocParm>() == 24);
+    // `head()` views the start of the command buffer as a ZfsCmdHead.
+    const _: () = assert!(size_of::<ZfsCmdHead>() <= CMD_WORDS * 8);
+    const _: () = assert!(align_of::<ZfsCmdHead>() <= align_of::<u64>());
 
     struct ZfsDev {
         file: File,

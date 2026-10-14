@@ -142,7 +142,10 @@ impl Mib {
             // SAFETY: `buf` has capacity for `len` bytes.
             match unsafe { self.raw(buf.as_mut_ptr().cast(), &mut len) } {
                 Ok(()) => {
-                    // SAFETY: the kernel initialized the first `len` bytes.
+                    // sysctl never reports more than it was given room for.
+                    assert!(len <= buf.capacity(), "sysctl overran its buffer");
+                    // SAFETY: the kernel initialized the first `len` bytes,
+                    // which fit in the capacity.
                     unsafe { buf.set_len(len) };
                     return Ok(());
                 }
