@@ -1,10 +1,9 @@
-//! Platform-specific system access. FreeBSD is the deployment target; Linux
-//! support exists only where cheap, so the agent can be run during development.
+//! Platform-specific system access for FreeBSD and Linux.
 
 #[cfg(target_os = "freebsd")]
 pub mod freebsd;
 #[cfg(target_os = "linux")]
-mod linux;
+pub mod linux;
 
 use std::{
     ffi::CStr,
