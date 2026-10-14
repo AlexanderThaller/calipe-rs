@@ -65,8 +65,15 @@ Grafana (Dashboards, New, Import) or provision it from a file; it asks for a Pro
 * Collapsed rows: probe tables and latencies, monitored processes, and calipers' own collector
   timings.
 
-The JSON is generated: edit `resources/grafana/generate.py` and run
-`python3 resources/grafana/generate.py > resources/grafana/calipers.json`.
+`resources/grafana/calipers-probes.json` covers the HTTP and DNS probes: success ratios, latency
+quantiles over the selected range, failures by result, and per URL (`URL` variable) and per DNS
+server (`DNS server` variable) a heatmap of the native latency histogram next to p50/p90/p99/avg.
+The heatmaps need Prometheus native histograms end to end (see `dev.adoc`).
+
+The JSON is generated: edit `resources/grafana/generate.py` (overview), `generate_probes.py`
+(probes) or the shared `dashlib.py`, and run
+`python3 resources/grafana/generate.py > resources/grafana/calipers.json` and
+`python3 resources/grafana/generate_probes.py > resources/grafana/calipers-probes.json`.
 
 == Development
 
