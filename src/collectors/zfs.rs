@@ -2,15 +2,15 @@
 //!
 //! Everything is read in-process, without running `zpool`:
 //!
-//! * kstats (`kstat.zfs.misc.<name>.*`) via a sysctl walk at startup and
-//!   reads by MIB afterwards. Event counts become counters, everything else
-//!   gauges (see [`kstat_kind`]).
+//! * kstats (`kstat.zfs.misc.<name>.*`) via a sysctl walk at startup and reads
+//!   by MIB afterwards. Event counts become counters, everything else gauges
+//!   (see [`kstat_kind`]).
 //! * Pools via `/dev/zfs` ioctls, decoded with [`crate::nvlist`]:
 //!   `ZFS_IOC_POOL_CONFIGS` lists pools (and is skipped via its generation
-//!   cookie while nothing changed), `ZFS_IOC_POOL_GET_PROPS` gives the
-//!   `zpool list` numbers, `ZFS_IOC_POOL_STATS` the vdev tree with I/O and
-//!   error counters and the last scrub/resilver. None of these need
-//!   privileges or write to the pool history.
+//!   cookie while nothing changed), `ZFS_IOC_POOL_GET_PROPS` gives the `zpool
+//!   list` numbers, `ZFS_IOC_POOL_STATS` the vdev tree with I/O and error
+//!   counters and the last scrub/resilver. None of these need privileges or
+//!   write to the pool history.
 //! * Pool health is `kstat.zfs.<pool>.misc.state`, which the kernel computes
 //!   with the same logic `zpool list` uses.
 
@@ -22,10 +22,16 @@
 
 use std::time::Duration;
 
-use metrics::{describe_counter, describe_gauge};
+use metrics::{
+    describe_counter,
+    describe_gauge,
+};
 use serde::Deserialize;
 
-use crate::nvlist::{NvList, Value};
+use crate::nvlist::{
+    NvList,
+    Value,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -370,20 +376,47 @@ pub use freebsd::Zfs;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use std::collections::HashMap;
-    use std::ffi::CString;
-    use std::fs::File;
-    use std::io;
-    use std::os::fd::AsRawFd;
+    use std::{
+        collections::HashMap,
+        ffi::CString,
+        fs::File,
+        io,
+        os::fd::AsRawFd,
+    };
 
-    use anyhow::{Context, Result, bail};
-    use metrics::{counter, gauge};
+    use anyhow::{
+        Context,
+        Result,
+        bail,
+    };
+    use metrics::{
+        counter,
+        gauge,
+    };
 
-    use super::{Config, Kind, STATES, ZIO_TYPES, describe, kstat_kind, pool_props, scan, vdevs};
-    use crate::collector::Collector;
-    use crate::counter::Monotonic;
-    use crate::nvlist::{self, Value};
-    use crate::sys::freebsd::{Mib, walk};
+    use super::{
+        Config,
+        Kind,
+        STATES,
+        ZIO_TYPES,
+        describe,
+        kstat_kind,
+        pool_props,
+        scan,
+        vdevs,
+    };
+    use crate::{
+        collector::Collector,
+        counter::Monotonic,
+        nvlist::{
+            self,
+            Value,
+        },
+        sys::freebsd::{
+            Mib,
+            walk,
+        },
+    };
 
     /// `ZFS_IOC_*` numbers (`zfs_ioc_t`, which starts at 0 on FreeBSD).
     const ZFS_IOC_POOL_CONFIGS: u8 = 0x04;
@@ -751,8 +784,13 @@ mod freebsd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nvlist::tests::{Enc, pack};
-    use crate::nvlist::unpack;
+    use crate::nvlist::{
+        tests::{
+            Enc,
+            pack,
+        },
+        unpack,
+    };
 
     #[test]
     fn classifies_kstats() {

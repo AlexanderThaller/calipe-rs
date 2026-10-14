@@ -4,11 +4,16 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use metrics::{describe_gauge, gauge};
+use metrics::{
+    describe_gauge,
+    gauge,
+};
 use serde::Deserialize;
 
-use crate::collector::Collector;
-use crate::sys;
+use crate::{
+    collector::Collector,
+    sys,
+};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]

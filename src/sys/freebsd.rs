@@ -8,10 +8,15 @@
     reason = "safe wrappers around sysctl(3); each unsafe block states its invariant"
 )]
 
-use std::ffi::CString;
-use std::io;
-use std::mem::{MaybeUninit, size_of};
-use std::ptr;
+use std::{
+    ffi::CString,
+    io,
+    mem::{
+        MaybeUninit,
+        size_of,
+    },
+    ptr,
+};
 
 use libc::c_int;
 

@@ -16,7 +16,10 @@
 
 use std::time::Duration;
 
-use metrics::{describe_gauge, gauge};
+use metrics::{
+    describe_gauge,
+    gauge,
+};
 use serde::Deserialize;
 
 #[expect(
@@ -106,14 +109,29 @@ freebsd_only!(Cpu, "cpu");
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use anyhow::{Context, Result, bail};
+    use anyhow::{
+        Context,
+        Result,
+        bail,
+    };
     use metrics::gauge;
 
     use super::{
-        Config, MODES, describe, export_modes, is_present, kelvin_to_celsius, ticks_to_seconds,
+        Config,
+        MODES,
+        describe,
+        export_modes,
+        is_present,
+        kelvin_to_celsius,
+        ticks_to_seconds,
     };
-    use crate::collector::Collector;
-    use crate::sys::freebsd::{Mib, cast_slice};
+    use crate::{
+        collector::Collector,
+        sys::freebsd::{
+            Mib,
+            cast_slice,
+        },
+    };
 
     struct Sensor {
         cpu: String,
@@ -176,7 +194,8 @@ mod freebsd {
             }
             if config.temperature && temperatures.is_empty() {
                 bail!(
-                    "temperature = true, but no dev.cpu.N.temperature sysctl exists (load coretemp or amdtemp)"
+                    "temperature = true, but no dev.cpu.N.temperature sysctl exists (load \
+                     coretemp or amdtemp)"
                 );
             }
             if config.frequency && frequencies.is_empty() {

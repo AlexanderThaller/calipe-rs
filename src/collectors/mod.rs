@@ -49,8 +49,10 @@ pub mod zfs;
 
 use std::time::Duration;
 
-use crate::collector::Scheduled;
-use crate::config::Config;
+use crate::{
+    collector::Scheduled,
+    config::Config,
+};
 
 /// Instantiates every enabled input. Fails if any input can't be set up
 /// (e.g. a sysctl that doesn't exist), so misconfiguration is caught at start.

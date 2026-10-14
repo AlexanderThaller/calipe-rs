@@ -17,7 +17,10 @@ mod sys;
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{
+    Context,
+    Result,
+};
 use clap::Parser;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use metrics_util::MetricKindMask;
@@ -173,7 +176,10 @@ fn init_logging() {
 }
 
 async fn shutdown_signal() -> &'static str {
-    use tokio::signal::unix::{SignalKind, signal};
+    use tokio::signal::unix::{
+        SignalKind,
+        signal,
+    };
     let mut term = signal(SignalKind::terminate()).expect("installing SIGTERM handler");
     let mut int = signal(SignalKind::interrupt()).expect("installing SIGINT handler");
     tokio::select! {

@@ -5,16 +5,39 @@
 //! and a reply is accepted only if its ID, QR bit and echoed question match.
 //! All queries of all `[[inputs.dns_query]]` blocks run concurrently.
 
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, Hasher};
-use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, Instant};
+use std::{
+    collections::hash_map::RandomState,
+    hash::{
+        BuildHasher,
+        Hasher,
+    },
+    net::{
+        IpAddr,
+        SocketAddr,
+    },
+    time::{
+        Duration,
+        Instant,
+    },
+};
 
-use anyhow::{Result, bail};
-use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
+use anyhow::{
+    Result,
+    bail,
+};
+use metrics::{
+    counter,
+    describe_counter,
+    describe_gauge,
+    describe_histogram,
+    gauge,
+    histogram,
+};
 use serde::Deserialize;
-use tokio::net::UdpSocket;
-use tokio::task::JoinSet;
+use tokio::{
+    net::UdpSocket,
+    task::JoinSet,
+};
 
 use crate::collector::Collector;
 

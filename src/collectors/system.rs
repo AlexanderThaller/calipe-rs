@@ -40,16 +40,28 @@ pub use freebsd::System;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use std::collections::HashSet;
-    use std::io;
+    use std::{
+        collections::HashSet,
+        io,
+    };
 
-    use anyhow::{Context, Result};
+    use anyhow::{
+        Context,
+        Result,
+    };
     use metrics::gauge;
 
-    use super::{Config, describe};
-    use crate::collector::Collector;
-    use crate::sys::freebsd::Mib;
-    use crate::sys::timeval_secs;
+    use super::{
+        Config,
+        describe,
+    };
+    use crate::{
+        collector::Collector,
+        sys::{
+            freebsd::Mib,
+            timeval_secs,
+        },
+    };
 
     pub struct System {
         boottime: Mib,

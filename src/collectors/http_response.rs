@@ -7,12 +7,28 @@
 //! (`/etc/ssl/cert.pem` on FreeBSD). All URLs of all `[[inputs.http_response]]`
 //! blocks are probed concurrently.
 
-use std::collections::BTreeMap;
-use std::error::Error as _;
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeMap,
+    error::Error as _,
+    time::{
+        Duration,
+        Instant,
+    },
+};
 
-use anyhow::{Context, Result, bail};
-use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
+use anyhow::{
+    Context,
+    Result,
+    bail,
+};
+use metrics::{
+    counter,
+    describe_counter,
+    describe_gauge,
+    describe_histogram,
+    gauge,
+    histogram,
+};
 use regex::Regex;
 use serde::Deserialize;
 use tokio::task::JoinSet;
@@ -135,7 +151,8 @@ fn read_tlv(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     Some((tag, contents, &input[header + len..]))
 }
 
-/// `UTCTime` (`YYMMDDHHMMSSZ`) or `GeneralizedTime` (`YYYYMMDDHHMMSSZ`) as Unix time.
+/// `UTCTime` (`YYMMDDHHMMSSZ`) or `GeneralizedTime` (`YYYYMMDDHHMMSSZ`) as Unix
+/// time.
 fn parse_time(tag: u8, value: &[u8]) -> Option<i64> {
     let text = std::str::from_utf8(value).ok()?.strip_suffix('Z')?;
     let (year, rest) = match tag {
@@ -430,7 +447,8 @@ mod tests {
 
     #[test]
     fn reads_certificate_expiry() {
-        // *.thaller.ws, notAfter=Jan  1 03:21:26 2027 GMT (openssl x509 -enddate).
+        // *.thaller.ws, notAfter=Jan  1 03:21:26 2027 GMT (openssl x509
+        // -enddate).
         let der = include_bytes!("testdata/ip.thaller.ws.der");
         assert_eq!(cert_not_after(der), Some(1_798_773_686));
         assert_eq!(cert_not_after(&der[..100]), None, "truncated");

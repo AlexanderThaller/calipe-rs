@@ -18,7 +18,10 @@
 
 use std::time::Duration;
 
-use metrics::{describe_counter, describe_gauge};
+use metrics::{
+    describe_counter,
+    describe_gauge,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -233,13 +236,26 @@ pub use freebsd::Net;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use anyhow::{Context, Result, anyhow};
-    use metrics::{counter, gauge};
+    use anyhow::{
+        Context,
+        Result,
+        anyhow,
+    };
+    use metrics::{
+        counter,
+        gauge,
+    };
 
-    use super::{Config, describe, parse};
-    use crate::collector::Collector;
-    use crate::counter::Monotonic;
-    use crate::sys::freebsd::Mib;
+    use super::{
+        Config,
+        describe,
+        parse,
+    };
+    use crate::{
+        collector::Collector,
+        counter::Monotonic,
+        sys::freebsd::Mib,
+    };
 
     /// `NET_RT_IFLISTL` from `sys/socket.h`.
     const NET_RT_IFLISTL: libc::c_int = 5;

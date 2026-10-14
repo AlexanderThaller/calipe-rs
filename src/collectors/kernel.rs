@@ -65,9 +65,15 @@ mod freebsd {
     use anyhow::Result;
     use metrics::counter;
 
-    use super::{COUNTERS, Config, describe};
-    use crate::collector::Collector;
-    use crate::sys::freebsd::Uint;
+    use super::{
+        COUNTERS,
+        Config,
+        describe,
+    };
+    use crate::{
+        collector::Collector,
+        sys::freebsd::Uint,
+    };
 
     pub struct Kernel {
         counters: Vec<(Uint, &'static str, &'static str, &'static str)>,

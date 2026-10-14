@@ -1,12 +1,30 @@
 //! Collector trait and the scheduler that drives collectors on their intervals.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    future::Future,
+    pin::Pin,
+    time::{
+        Duration,
+        Instant,
+        SystemTime,
+        UNIX_EPOCH,
+    },
+};
 
 use anyhow::Result;
-use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
-use tokio::time::{MissedTickBehavior, interval_at, timeout};
+use metrics::{
+    counter,
+    describe_counter,
+    describe_gauge,
+    describe_histogram,
+    gauge,
+    histogram,
+};
+use tokio::time::{
+    MissedTickBehavior,
+    interval_at,
+    timeout,
+};
 
 /// A source of metrics. `collect` updates metrics-rs handles directly.
 ///
@@ -85,7 +103,8 @@ impl Scheduled {
         let errors = counter!("calipers_collector_errors_total", "collector" => name);
         match result {
             Ok(()) => {
-                // Touch the counter so it exists (and doesn't expire) while healthy.
+                // Touch the counter so it exists (and doesn't expire) while
+                // healthy.
                 errors.increment(0);
                 gauge!("calipers_collector_last_success_timestamp_seconds", "collector" => name)
                     .set(unix_now());

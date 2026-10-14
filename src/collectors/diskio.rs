@@ -18,7 +18,10 @@
 
 use std::time::Duration;
 
-use metrics::{describe_counter, describe_gauge};
+use metrics::{
+    describe_counter,
+    describe_gauge,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -167,13 +170,29 @@ pub use freebsd::DiskIo;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use anyhow::{Context, Result, anyhow, bail};
-    use metrics::{counter, gauge};
+    use anyhow::{
+        Context,
+        Result,
+        anyhow,
+        bail,
+    };
+    use metrics::{
+        counter,
+        gauge,
+    };
 
-    use super::{Config, DEVSTAT_VERSION, TYPES, describe, parse};
-    use crate::collector::Collector;
-    use crate::counter::Monotonic;
-    use crate::sys::freebsd::Mib;
+    use super::{
+        Config,
+        DEVSTAT_VERSION,
+        TYPES,
+        describe,
+        parse,
+    };
+    use crate::{
+        collector::Collector,
+        counter::Monotonic,
+        sys::freebsd::Mib,
+    };
 
     pub struct DiskIo {
         config: Config,

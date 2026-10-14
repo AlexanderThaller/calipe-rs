@@ -17,7 +17,10 @@
 
 use std::time::Duration;
 
-use metrics::{describe_counter, describe_gauge};
+use metrics::{
+    describe_counter,
+    describe_gauge,
+};
 use serde::Deserialize;
 
 use crate::libnv::NvList;
@@ -105,16 +108,32 @@ pub use freebsd::Pf;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use std::fs::File;
-    use std::io;
-    use std::os::fd::AsRawFd;
+    use std::{
+        fs::File,
+        io,
+        os::fd::AsRawFd,
+    };
 
-    use anyhow::{Context, Result, anyhow};
-    use metrics::{counter, gauge};
+    use anyhow::{
+        Context,
+        Result,
+        anyhow,
+    };
+    use metrics::{
+        counter,
+        gauge,
+    };
 
-    use super::{Config, describe, loginterface, named_counters};
-    use crate::collector::Collector;
-    use crate::libnv;
+    use super::{
+        Config,
+        describe,
+        loginterface,
+        named_counters,
+    };
+    use crate::{
+        collector::Collector,
+        libnv,
+    };
 
     /// `struct pfioc_nv` from `net/pfvar.h`.
     #[repr(C)]
@@ -228,8 +247,13 @@ mod freebsd {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::libnv::tests::{Enc, pack};
-    use crate::libnv::unpack;
+    use crate::libnv::{
+        tests::{
+            Enc,
+            pack,
+        },
+        unpack,
+    };
 
     #[test]
     fn extracts_named_counters_and_loginterface() {

@@ -16,7 +16,10 @@
 
 use std::time::Duration;
 
-use metrics::{describe_counter, describe_gauge};
+use metrics::{
+    describe_counter,
+    describe_gauge,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -69,15 +72,34 @@ pub use freebsd::Swap;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use std::ffi::CStr;
-    use std::io;
+    use std::{
+        ffi::CStr,
+        io,
+    };
 
-    use anyhow::{Context, Result, anyhow};
-    use metrics::{counter, gauge};
+    use anyhow::{
+        Context,
+        Result,
+        anyhow,
+    };
+    use metrics::{
+        counter,
+        gauge,
+    };
 
-    use super::{Config, XswDev, describe};
-    use crate::collector::Collector;
-    use crate::sys::freebsd::{Mib, Plain, Uint};
+    use super::{
+        Config,
+        XswDev,
+        describe,
+    };
+    use crate::{
+        collector::Collector,
+        sys::freebsd::{
+            Mib,
+            Plain,
+            Uint,
+        },
+    };
 
     // SAFETY: repr(C) struct of integers; padding bytes are never read.
     #[expect(unsafe_code, reason = "read from vm.swap_info via sysctl")]
@@ -115,7 +137,8 @@ mod freebsd {
         if ptr.is_null() {
             return format!("#{dev:x}");
         }
-        // SAFETY: devname_r returned a NUL-terminated string (in `buf` or static).
+        // SAFETY: devname_r returned a NUL-terminated string (in `buf` or
+        // static).
         unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned()

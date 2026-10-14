@@ -19,8 +19,13 @@
     expect(dead_code, reason = "used by the FreeBSD implementation")
 )]
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{
+        Duration,
+        Instant,
+    },
+};
 
 /// Series not updated for this long are forgotten. Longer than the
 /// exporter's idle timeout, so a series that comes back after being dropped

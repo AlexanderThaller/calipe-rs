@@ -3,12 +3,18 @@
 //! Close to Telegraf's layout, but our own: unknown keys are rejected so typos
 //! fail at startup instead of being silently ignored.
 
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
-use std::path::Path;
-use std::time::Duration;
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    path::Path,
+    time::Duration,
+};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{
+    Context,
+    Result,
+    bail,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize)]
@@ -124,7 +130,8 @@ impl Config {
         }
         if !self.agent.omit_hostname && self.global_tags.contains_key("host") {
             bail!(
-                "global_tags.host conflicts with the automatic host label; set agent.omit_hostname = true"
+                "global_tags.host conflicts with the automatic host label; set \
+                 agent.omit_hostname = true"
             );
         }
         Ok(())

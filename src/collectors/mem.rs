@@ -12,10 +12,11 @@
 //!   memory; the difference is reserved by the kernel at boot.
 //! * Wired memory is broken down further where FreeBSD tells us: ZFS ARC, the
 //!   UFS buffer cache and user-wired (mlock) memory. These overlap `wired`.
-//! * `mem_available_bytes` = free + inactive + (ARC size - ARC minimum). Laundry
-//!   is excluded because reclaiming it needs swap I/O, the same reason Linux's
-//!   `MemAvailable` excludes anonymous memory. The ARC part matters on ZFS
-//!   systems, where the ARC would otherwise make memory look permanently full.
+//! * `mem_available_bytes` = free + inactive + (ARC size - ARC minimum).
+//!   Laundry is excluded because reclaiming it needs swap I/O, the same reason
+//!   Linux's `MemAvailable` excludes anonymous memory. The ARC part matters on
+//!   ZFS systems, where the ARC would otherwise make memory look permanently
+//!   full.
 
 // The helpers are only used by the FreeBSD implementation (and tests).
 #![cfg_attr(
@@ -25,7 +26,10 @@
 
 use std::time::Duration;
 
-use metrics::{describe_counter, describe_gauge};
+use metrics::{
+    describe_counter,
+    describe_gauge,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -114,11 +118,20 @@ pub use freebsd::Mem;
 #[cfg(target_os = "freebsd")]
 mod freebsd {
     use anyhow::Result;
-    use metrics::{counter, gauge};
+    use metrics::{
+        counter,
+        gauge,
+    };
 
-    use super::{Config, Snapshot, describe};
-    use crate::collector::Collector;
-    use crate::sys::freebsd::Uint;
+    use super::{
+        Config,
+        Snapshot,
+        describe,
+    };
+    use crate::{
+        collector::Collector,
+        sys::freebsd::Uint,
+    };
 
     struct Arc {
         size: Uint,

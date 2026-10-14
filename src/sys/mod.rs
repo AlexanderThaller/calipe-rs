@@ -6,8 +6,10 @@ pub mod freebsd;
 #[cfg(target_os = "linux")]
 mod linux;
 
-use std::ffi::CStr;
-use std::io;
+use std::{
+    ffi::CStr,
+    io,
+};
 
 /// Resident set size of this process in bytes.
 pub fn self_rss_bytes() -> io::Result<u64> {
@@ -22,7 +24,8 @@ pub fn self_rss_bytes() -> io::Result<u64> {
 /// User and system CPU time consumed by this process, in seconds.
 #[expect(unsafe_code, reason = "getrusage(2) FFI")]
 pub fn self_cpu_seconds() -> io::Result<(f64, f64)> {
-    // SAFETY: `rusage` is plain data; getrusage fully initializes it on success.
+    // SAFETY: `rusage` is plain data; getrusage fully initializes it on
+    // success.
     let usage = unsafe {
         let mut usage: libc::rusage = std::mem::zeroed();
         if libc::getrusage(libc::RUSAGE_SELF, &raw mut usage) != 0 {
@@ -40,7 +43,8 @@ pub fn timeval_secs(tv: libc::timeval) -> f64 {
 #[expect(unsafe_code, reason = "gethostname(3) FFI")]
 pub fn hostname() -> io::Result<String> {
     let mut buf = [0u8; 256];
-    // SAFETY: the buffer is valid for `buf.len()` bytes; we keep the last byte as NUL.
+    // SAFETY: the buffer is valid for `buf.len()` bytes; we keep the last byte
+    // as NUL.
     if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len() - 1) } != 0 {
         return Err(io::Error::last_os_error());
     }

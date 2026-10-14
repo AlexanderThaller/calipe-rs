@@ -1,12 +1,12 @@
 //! Disk health (S.M.A.R.T.) for SATA and NVMe drives, read natively instead
 //! of running smartctl.
 //!
-//! * SATA (`adaN`): ATA commands sent through CAM (libcam's
-//!   `cam_open_device` + `CAMIOCOMMAND` with an `XPT_ATA_IO` CCB, as
-//!   smartctl's FreeBSD backend does): IDENTIFY DEVICE, CHECK POWER MODE,
-//!   SMART RETURN STATUS, SMART READ DATA and READ THRESHOLDS.
-//! * NVMe (`nvmeN`): `NVME_PASSTHROUGH_CMD` on the controller device:
-//!   IDENTIFY CONTROLLER and the SMART / Health Information log page (0x02).
+//! * SATA (`adaN`): ATA commands sent through CAM (libcam's `cam_open_device` +
+//!   `CAMIOCOMMAND` with an `XPT_ATA_IO` CCB, as smartctl's FreeBSD backend
+//!   does): IDENTIFY DEVICE, CHECK POWER MODE, SMART RETURN STATUS, SMART READ
+//!   DATA and READ THRESHOLDS.
+//! * NVMe (`nvmeN`): `NVME_PASSTHROUGH_CMD` on the controller device: IDENTIFY
+//!   CONTROLLER and the SMART / Health Information log page (0x02).
 //!
 //! Struct layouts (`union ccb`, `struct ata_cmd`/`ata_res`,
 //! `struct nvme_pt_command`) were taken from the 14.5 and 15.1 headers with
@@ -368,21 +368,43 @@ pub use freebsd::Smart;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use std::collections::HashMap;
-    use std::ffi::{CString, c_char, c_int, c_void};
-    use std::fs::File;
-    use std::io;
-    use std::os::fd::AsRawFd;
+    use std::{
+        collections::HashMap,
+        ffi::{
+            CString,
+            c_char,
+            c_int,
+            c_void,
+        },
+        fs::File,
+        io,
+        os::fd::AsRawFd,
+    };
 
-    use anyhow::{Context, Result, anyhow};
+    use anyhow::{
+        Context,
+        Result,
+        anyhow,
+    };
     use metrics::gauge;
 
     use super::{
-        Config, Identity, ata_attributes, ata_health, ata_identity, ata_smart_enabled, ata_summary,
-        attribute_name, describe, nvme_health, nvme_identity,
+        Config,
+        Identity,
+        ata_attributes,
+        ata_health,
+        ata_identity,
+        ata_smart_enabled,
+        ata_summary,
+        attribute_name,
+        describe,
+        nvme_health,
+        nvme_identity,
     };
-    use crate::collector::Collector;
-    use crate::sys::freebsd::Mib;
+    use crate::{
+        collector::Collector,
+        sys::freebsd::Mib,
+    };
 
     #[expect(unsafe_code, reason = "libcam FFI declarations")]
     #[link(name = "cam")]
@@ -550,14 +572,16 @@ mod freebsd {
             let len = u32::try_from(buf.len()).map_err(io::Error::other)?;
             p[nvme::LEN..nvme::LEN + 4].copy_from_slice(&len.to_ne_bytes());
             p[nvme::IS_READ..nvme::IS_READ + 4].copy_from_slice(&1u32.to_ne_bytes());
-            // SAFETY: `pt` is a valid nvme_pt_command and `buf` outlives the call.
+            // SAFETY: `pt` is a valid nvme_pt_command and `buf` outlives the
+            // call.
             if unsafe { libc::ioctl(self.file.as_raw_fd(), nvme::PASSTHROUGH_CMD, p.as_mut_ptr()) }
                 != 0
             {
                 return Err(io::Error::last_os_error());
             }
             let status = u16::from_le_bytes([p[nvme::CPL_STATUS], p[nvme::CPL_STATUS + 1]]);
-            // nvme_completion_is_error(): status code (bits 1-8) or type (9-11).
+            // nvme_completion_is_error(): status code (bits 1-8) or type
+            // (9-11).
             if (status >> 1) & 0xff != 0 || (status >> 9) & 0x7 != 0 {
                 return Err(io::Error::other(format!(
                     "NVMe admin command {opc:#x} failed (status {status:#x})"
@@ -645,7 +669,8 @@ mod freebsd {
                 attrs: Vec::new(),
             });
         }
-        // SMART RETURN STATUS / READ DATA / READ THRESHOLDS (B0h, LBA 0xC24F00).
+        // SMART RETURN STATUS / READ DATA / READ THRESHOLDS (B0h, LBA
+        // 0xC24F00).
         let status = dev.command(0xb0, 0xda, 0x4f, 0xc2, None)?;
         let mut data = [0u8; 512];
         dev.command(0xb0, 0xd0, 0x4f, 0xc2, Some(&mut data))?;

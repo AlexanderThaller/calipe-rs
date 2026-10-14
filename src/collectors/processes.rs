@@ -21,11 +21,22 @@
     expect(dead_code, reason = "used by the FreeBSD implementation")
 )]
 
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{
+        Duration,
+        Instant,
+    },
+};
 
-use anyhow::{Result, bail};
-use metrics::{describe_counter, describe_gauge};
+use anyhow::{
+    Result,
+    bail,
+};
+use metrics::{
+    describe_counter,
+    describe_gauge,
+};
 use regex::Regex;
 use serde::Deserialize;
 
@@ -416,21 +427,48 @@ pub use freebsd::Processes;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use std::collections::HashMap;
-    use std::ffi::CStr;
-    use std::time::Instant;
+    use std::{
+        collections::HashMap,
+        ffi::CStr,
+        time::Instant,
+    };
 
-    use anyhow::{Context, Result, bail};
-    use metrics::{counter, gauge};
+    use anyhow::{
+        Context,
+        Result,
+        bail,
+    };
+    use metrics::{
+        counter,
+        gauge,
+    };
 
     use super::{
-        Aggregator, COUNTERS, Proc, ProcstatConfig, Query, STATES, count_fds, describe, full_name,
-        queries, state_char,
+        Aggregator,
+        COUNTERS,
+        Proc,
+        ProcstatConfig,
+        Query,
+        STATES,
+        count_fds,
+        describe,
+        full_name,
+        queries,
+        state_char,
     };
-    use crate::collector::Collector;
-    use crate::counter::Monotonic;
-    use crate::sys::freebsd::{Mib, c_chars_as_bytes, cast_slice};
-    use crate::sys::{page_size, timeval_secs};
+    use crate::{
+        collector::Collector,
+        counter::Monotonic,
+        sys::{
+            freebsd::{
+                Mib,
+                c_chars_as_bytes,
+                cast_slice,
+            },
+            page_size,
+            timeval_secs,
+        },
+    };
 
     /// `P_SYSTEM`: kernel processes have no argv.
     const P_SYSTEM: libc::c_long = 0x200;
@@ -478,7 +516,8 @@ mod freebsd {
             Ok(procs)
         }
 
-        /// argv joined by spaces, or `None` (kernel process, exited, no access).
+        /// argv joined by spaces, or `None` (kernel process, exited, no
+        /// access).
         fn cmdline(&mut self, pid: i32) -> Option<String> {
             Mib::from_raw(&[libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_ARGS, pid])
                 .read_into(&mut self.args_buf)
@@ -618,7 +657,8 @@ mod freebsd {
                 export_gauges(&labels, &Gauges::of(p));
                 let id = format!("{query}\0{}\0{}", p.pid, p.name);
                 for ((metric, key, value), raw) in COUNTERS.iter().zip(p.counters) {
-                    // The pid may be reused by a new process with the same name.
+                    // The pid may be reused by a new process with the same
+                    // name.
                     let v = self
                         .counters
                         .correct(&format!("{id}\0{metric}\0{value}"), raw);

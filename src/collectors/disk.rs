@@ -120,16 +120,32 @@ pub use freebsd::Disk;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use std::ffi::{CStr, CString};
-    use std::io;
-    use std::mem::MaybeUninit;
+    use std::{
+        ffi::{
+            CStr,
+            CString,
+        },
+        io,
+        mem::MaybeUninit,
+    };
 
-    use anyhow::{Context, Result};
+    use anyhow::{
+        Context,
+        Result,
+    };
     use metrics::gauge;
 
-    use super::{Config, Mount, Usage, describe, device_label};
-    use crate::collector::Collector;
-    use crate::sys::freebsd::c_chars_as_bytes;
+    use super::{
+        Config,
+        Mount,
+        Usage,
+        describe,
+        device_label,
+    };
+    use crate::{
+        collector::Collector,
+        sys::freebsd::c_chars_as_bytes,
+    };
 
     /// `MNT_RDONLY` from `sys/mount.h`.
     const MNT_RDONLY: u64 = 0x1;

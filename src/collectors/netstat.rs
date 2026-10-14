@@ -4,10 +4,10 @@
 //!
 //! * `net.inet.tcp.states`: `uint64_t[TCP_NSTATES]` connection counts the
 //!   kernel maintains on every state change (IPv4 and IPv6).
-//! * `net.inet.udp.pcblist`: only its 64-byte `struct xinpgen` header is
-//!   read. The kernel writes the header first and stops with `ENOMEM` at the
-//!   first socket record that doesn't fit, so this costs no copying.
-//!   `xig_count` is the number of UDP sockets (IPv4 and IPv6).
+//! * `net.inet.udp.pcblist`: only its 64-byte `struct xinpgen` header is read.
+//!   The kernel writes the header first and stops with `ENOMEM` at the first
+//!   socket record that doesn't fit, so this costs no copying. `xig_count` is
+//!   the number of UDP sockets (IPv4 and IPv6).
 //!
 //! Telegraf gets the same numbers by listing every socket.
 
@@ -74,12 +74,24 @@ pub use freebsd::Netstat;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use anyhow::{Context, Result, anyhow};
+    use anyhow::{
+        Context,
+        Result,
+        anyhow,
+    };
     use metrics::gauge;
 
-    use super::{Config, TCP_STATES, XINPGEN_SIZE, describe, xinpgen_count};
-    use crate::collector::Collector;
-    use crate::sys::freebsd::Mib;
+    use super::{
+        Config,
+        TCP_STATES,
+        XINPGEN_SIZE,
+        describe,
+        xinpgen_count,
+    };
+    use crate::{
+        collector::Collector,
+        sys::freebsd::Mib,
+    };
 
     pub struct Netstat {
         tcp_states: Mib,

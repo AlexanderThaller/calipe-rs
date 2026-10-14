@@ -11,10 +11,16 @@
 //! chronyd answers unauthenticated tracking requests from localhost on UDP
 //! port 323 (`cmdport`) by default.
 
-use std::net::SocketAddr;
-use std::time::Duration;
+use std::{
+    net::SocketAddr,
+    time::Duration,
+};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{
+    Context,
+    Result,
+    bail,
+};
 use metrics::describe_gauge;
 use serde::Deserialize;
 use tokio::net::UdpSocket;
@@ -44,7 +50,8 @@ fn default_timeout() -> Duration {
 pub fn describe() {
     describe_gauge!(
         "chrony_system_time_correction_seconds",
-        "Correction chronyd is slewing in (chronyc 'System time'); positive means the clock is slow."
+        "Correction chronyd is slewing in (chronyc 'System time'); positive means the clock is \
+         slow."
     );
     describe_gauge!(
         "chrony_last_offset_seconds",
@@ -56,7 +63,8 @@ pub fn describe() {
     );
     describe_gauge!(
         "chrony_frequency_ppm",
-        "Rate at which the system clock would drift without chronyd; negative means slow (chronyc -c sign)."
+        "Rate at which the system clock would drift without chronyd; negative means slow (chronyc \
+         -c sign)."
     );
     describe_gauge!(
         "chrony_residual_frequency_ppm",
