@@ -2,22 +2,30 @@
 //!
 //! Everything is read in-process, without running `zpool`:
 //!
-//! * kstats (`kstat.zfs.misc.<name>.*`) via a sysctl walk at startup and reads
-//!   by MIB afterwards. Event counts become counters, everything else gauges
-//!   (see [`kstat_kind`]).
+//! * kstats: on FreeBSD `kstat.zfs.misc.<name>.*` via a sysctl walk at startup
+//!   and reads by MIB afterwards; on Linux the text files
+//!   `/proc/spl/kstat/zfs/<name>`, whose fields are resolved at startup too.
+//!   Event counts become counters, everything else gauges (see [`kstat_kind`]);
+//!   signed fields are always gauges.
 //! * Pools via `/dev/zfs` ioctls, decoded with [`crate::nvlist`]:
 //!   `ZFS_IOC_POOL_CONFIGS` lists pools (and is skipped via its generation
 //!   cookie while nothing changed), `ZFS_IOC_POOL_GET_PROPS` gives the `zpool
 //!   list` numbers, `ZFS_IOC_POOL_STATS` the vdev tree with I/O and error
 //!   counters and the last scrub/resilver. None of these need privileges or
-//!   write to the pool history.
-//! * Pool health is `kstat.zfs.<pool>.misc.state`, which the kernel computes
-//!   with the same logic `zpool list` uses.
+//!   write to the pool history. FreeBSD wraps `zfs_cmd_t` in `zfs_iocparm_t`;
+//!   Linux passes it directly, with request numbers offset by `'Z' << 8` and a
+//!   larger `MAXPATHLEN`.
+//! * Pool health is `kstat.zfs.<pool>.misc.state` (FreeBSD) or
+//!   `/proc/spl/kstat/zfs/<pool>/state` (Linux), which the kernel computes with
+//!   the same logic `zpool list` uses.
+//! * Vdev names follow `zpool status`; on Linux that strips the
+//!   `/dev/disk/by-*` directory and, for whole disks, the partition suffix.
 
-// The helpers are only used by the FreeBSD implementation (and tests).
+// The helpers are only used by the FreeBSD and Linux implementations (and
+// tests).
 #![cfg_attr(
-    not(target_os = "freebsd"),
-    expect(dead_code, reason = "used by the FreeBSD implementation")
+    not(any(target_os = "freebsd", target_os = "linux")),
+    expect(dead_code, reason = "used by the FreeBSD and Linux implementations")
 )]
 
 use std::time::Duration;
@@ -287,6 +295,12 @@ fn vdev_name(pool: &str, vdev: &NvList<'_>) -> Option<String> {
         return vdev.get_uint("guid").map(|g| g.to_string());
     }
     if let Some(path) = vdev.get_str("path") {
+        if cfg!(target_os = "linux") && typ == "disk" {
+            return Some(linux_disk_name(
+                path,
+                vdev.get_uint("whole_disk") == Some(1),
+            ));
+        }
         let path = if typ == "disk" {
             path.strip_prefix("/dev/").unwrap_or(path)
         } else {
@@ -369,15 +383,154 @@ pub fn scan(pss: &[u64]) -> Option<Scan> {
     })
 }
 
-freebsd_only!(Zfs, "zfs");
+/// `zfs_strip_path()` search paths on Linux (`zpool_default_import_path` in
+/// libzutil), in order. A disk vdev's name is its path without the first
+/// matching directory.
+const LINUX_SEARCH_PATHS: [&str; 9] = [
+    "/dev/disk/by-vdev",
+    "/dev/mapper",
+    "/dev/disk/by-partlabel",
+    "/dev/disk/by-partuuid",
+    "/dev/disk/by-label",
+    "/dev/disk/by-uuid",
+    "/dev/disk/by-id",
+    "/dev/disk/by-path",
+    "/dev",
+];
+
+/// A disk vdev's name as `zpool status` prints it on Linux: the path without
+/// its search directory, and for whole disks without the partition ZFS
+/// created (`zfs_strip_path()` and `zfs_strip_partition()` from libzutil).
+pub fn linux_disk_name(path: &str, whole_disk: bool) -> String {
+    let name = LINUX_SEARCH_PATHS
+        .iter()
+        .find_map(|dir| path.strip_prefix(dir)?.strip_prefix('/'))
+        .unwrap_or(path);
+    if whole_disk {
+        strip_partition(name).to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
+/// `zfs_strip_partition()`: removes a trailing `-partN` (by-id names), `pN`
+/// after a digit (`nvme0n1p1`) or the digits after `sd`/`hd`/`vd`/`xvd`
+/// letters (`sda1`).
+fn strip_partition(name: &str) -> &str {
+    let b = name.as_bytes();
+    let alpha_end = |from: usize| {
+        let end = from
+            + b[from..]
+                .iter()
+                .take_while(|c| c.is_ascii_alphabetic())
+                .count();
+        // C sets `part` only after consuming at least one letter.
+        (end > from).then_some(end)
+    };
+    let (part, digits) = if let Some(p) = name.find("-part").filter(|&p| p != 0) {
+        (Some(p), p + 5)
+    } else if let Some(p) = name
+        .rfind('p')
+        .filter(|&p| p > 1 && b[p - 1].is_ascii_digit())
+    {
+        (Some(p), p + 1)
+    } else if b.len() >= 2 && matches!(b[0], b'h' | b's' | b'v') && b[1] == b'd' {
+        let end = alpha_end(2);
+        (end, end.unwrap_or(2))
+    } else if name.starts_with("xvd") {
+        let end = alpha_end(3);
+        (end, end.unwrap_or(3))
+    } else {
+        (None, 0)
+    };
+    match part {
+        Some(part) if digits < b.len() && b[digits..].iter().all(u8::is_ascii_digit) => {
+            &name[..part]
+        }
+        _ => name,
+    }
+}
+
+/// A numeric value from a Linux kstat file.
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(dead_code, reason = "Linux kstat files")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KstatValue {
+    Signed(i64),
+    Unsigned(u64),
+}
+
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(dead_code, reason = "Linux kstat files")
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KstatRow<'a> {
+    pub name: &'a str,
+    pub value: KstatValue,
+}
+
+/// Parses a `KSTAT_TYPE_NAMED` kstat file from `/proc/spl/kstat/zfs`: a
+/// header line (`ks_kid ks_type ...`), the `name type data` column titles,
+/// then one row per field. Integer rows are returned; strings and chars are
+/// skipped, like the FreeBSD sysctl walk skips non-integer leaves.
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(dead_code, reason = "Linux kstat files")
+)]
+pub fn kstat_rows(text: &str) -> Result<impl Iterator<Item = KstatRow<'_>>, String> {
+    /// `KSTAT_TYPE_NAMED`.
+    const NAMED: &str = "1";
+    let mut lines = text.lines();
+    let header = lines.next().ok_or("empty kstat")?;
+    if header.split_whitespace().nth(1) != Some(NAMED) {
+        return Err(format!("not a named kstat (header {header:?})"));
+    }
+    let titles = lines.next().unwrap_or_default();
+    if !titles.split_whitespace().eq(["name", "type", "data"]) {
+        return Err(format!("unexpected kstat column titles {titles:?}"));
+    }
+    Ok(lines.filter_map(|line| {
+        let mut cols = line.split_whitespace();
+        let (name, typ, data) = (cols.next()?, cols.next()?, cols.next()?);
+        // KSTAT_DATA_INT32/INT64/LONG and UINT32/UINT64/ULONG.
+        let value = match typ {
+            "1" | "3" | "5" => KstatValue::Signed(data.parse().ok()?),
+            "2" | "4" | "6" => KstatValue::Unsigned(data.parse().ok()?),
+            _ => return None,
+        };
+        Some(KstatRow { name, value })
+    }))
+}
+
+/// The metric a kstat field is exported as and its type. Signed fields are
+/// always gauges.
+fn kstat_metric(kstat: &str, field: &str, signed: bool) -> (String, Kind) {
+    let kind = if signed {
+        Kind::Gauge
+    } else {
+        kstat_kind(kstat, field)
+    };
+    let metric = match kind {
+        Kind::Counter => format!("zfs_{kstat}_{field}_total"),
+        Kind::Gauge => format!("zfs_{kstat}_{field}"),
+    };
+    (metric, kind)
+}
+
+native_only!(Zfs, "zfs");
 
 #[cfg(target_os = "freebsd")]
 pub use freebsd::Zfs;
+#[cfg(target_os = "linux")]
+pub use linux::Zfs;
 
-#[cfg(target_os = "freebsd")]
-mod freebsd {
+/// `/dev/zfs` access and the pool metrics, shared by FreeBSD and Linux.
+#[cfg(any(target_os = "freebsd", target_os = "linux"))]
+mod native {
     use std::{
-        collections::HashMap,
         ffi::CString,
         fs::File,
         io,
@@ -387,7 +540,6 @@ mod freebsd {
     use anyhow::{
         Context,
         Result,
-        bail,
     };
     use metrics::{
         counter,
@@ -395,50 +547,37 @@ mod freebsd {
     };
 
     use super::{
-        Config,
-        Kind,
         STATES,
         ZIO_TYPES,
-        describe,
-        kstat_kind,
         pool_props,
         scan,
         vdevs,
     };
     use crate::{
-        collector::Collector,
         counter::Monotonic,
         nvlist::{
             self,
             Value,
         },
-        sys::freebsd::{
-            Mib,
-            walk,
-        },
     };
 
-    /// `ZFS_IOC_*` numbers (`zfs_ioc_t`, which starts at 0 on FreeBSD).
+    /// `ZFS_IOC_*` numbers relative to `ZFS_IOC_FIRST` (`zfs_ioc_t`).
     const ZFS_IOC_POOL_CONFIGS: u8 = 0x04;
     const ZFS_IOC_POOL_STATS: u8 = 0x05;
     const ZFS_IOC_POOL_GET_PROPS: u8 = 0x27;
-    /// `ZFS_IOCVER_OZFS`; checked against `vfs.zfs.version.ioctl`.
-    const ZFS_IOCVER_OZFS: u32 = 15;
 
-    /// `zfs_iocparm_t`, the FreeBSD ioctl argument wrapping `zfs_cmd_t`.
-    #[repr(C)]
-    struct IocParm {
-        version: u32,
-        cmd: u64,
-        cmd_size: u64,
-    }
+    /// `MAXPATHLEN`, which sizes the name and value fields of `zfs_cmd_t`.
+    #[cfg(target_os = "freebsd")]
+    const MAXPATHLEN: usize = 1024;
+    #[cfg(target_os = "linux")]
+    const MAXPATHLEN: usize = 4096;
 
     /// The leading fields of `zfs_cmd_t` (`include/sys/zfs_ioctl.h`) that we
     /// use. The kernel copies `sizeof (zfs_cmd_t)` bytes in and out regardless
     /// of the size we pass, so it lives at the start of a larger zeroed buffer.
     #[repr(C)]
     struct ZfsCmdHead {
-        name: [u8; 1024],
+        name: [u8; MAXPATHLEN],
         nvlist_src: u64,
         nvlist_src_size: u64,
         nvlist_dst: u64,
@@ -446,7 +585,7 @@ mod freebsd {
         nvlist_dst_filled: i32,
         pad2: i32,
         history: u64,
-        value: [u8; 2048],
+        value: [u8; MAXPATHLEN * 2],
         string: [u8; 256],
         guid: u64,
         nvlist_conf: u64,
@@ -454,17 +593,126 @@ mod freebsd {
         cookie: u64,
     }
 
-    /// Comfortably larger than `sizeof (zfs_cmd_t)` (about 13 KiB).
+    /// Comfortably larger than `sizeof (zfs_cmd_t)` (about 13 KiB on FreeBSD,
+    /// 22 KiB on Linux).
     const CMD_WORDS: usize = 64 * 1024 / 8;
     /// Output buffers grow on ENOMEM up to this size.
     const MAX_NVLIST: usize = 64 << 20;
 
+    #[cfg(target_os = "freebsd")]
     const _: () = assert!(std::mem::offset_of!(ZfsCmdHead, nvlist_dst) == 1040);
+    #[cfg(target_os = "freebsd")]
     const _: () = assert!(std::mem::offset_of!(ZfsCmdHead, cookie) == 3400);
-    const _: () = assert!(size_of::<IocParm>() == 24);
+    #[cfg(target_os = "linux")]
+    const _: () = assert!(std::mem::offset_of!(ZfsCmdHead, nvlist_dst) == 4112);
+    #[cfg(target_os = "linux")]
+    const _: () = assert!(std::mem::offset_of!(ZfsCmdHead, cookie) == 12616);
     // `head()` views the start of the command buffer as a ZfsCmdHead.
     const _: () = assert!(size_of::<ZfsCmdHead>() <= CMD_WORDS * 8);
     const _: () = assert!(align_of::<ZfsCmdHead>() <= align_of::<u64>());
+
+    #[cfg(target_os = "freebsd")]
+    mod os {
+        use std::io;
+
+        use anyhow::{
+            Context,
+            Result,
+            bail,
+        };
+
+        use crate::sys::freebsd::Mib;
+
+        /// `ZFS_IOCVER_OZFS`; checked against `vfs.zfs.version.ioctl`.
+        const ZFS_IOCVER_OZFS: u32 = 15;
+
+        /// `zfs_iocparm_t`, the FreeBSD ioctl argument wrapping `zfs_cmd_t`.
+        #[repr(C)]
+        struct IocParm {
+            version: u32,
+            cmd: u64,
+            cmd_size: u64,
+        }
+
+        const _: () = assert!(size_of::<IocParm>() == 24);
+
+        pub fn check_version() -> Result<()> {
+            let version: i32 = Mib::new("vfs.zfs.version.ioctl")
+                .and_then(|m| m.read())
+                .context("reading vfs.zfs.version.ioctl (is zfs.ko loaded?)")?;
+            if u32::try_from(version).ok() != Some(ZFS_IOCVER_OZFS) {
+                bail!("unsupported ZFS ioctl version {version} (expected {ZFS_IOCVER_OZFS})");
+            }
+            Ok(())
+        }
+
+        /// Issues ZFS ioctl `request` with the `zfs_cmd_t` at `cmd`.
+        #[expect(unsafe_code, reason = "ZFS ioctl FFI")]
+        pub fn ioctl(fd: i32, request: u8, cmd: &mut [u64]) -> io::Result<()> {
+            let mut parm = IocParm {
+                version: ZFS_IOCVER_OZFS,
+                cmd: cmd.as_mut_ptr() as u64,
+                cmd_size: (cmd.len() * 8) as u64,
+            };
+            // _IOWR('Z', request, zfs_iocparm_t)
+            let req: libc::c_ulong = 0xC000_0000
+                | ((size_of::<IocParm>() as libc::c_ulong & 0x1fff) << 16)
+                | (libc::c_ulong::from(b'Z') << 8)
+                | libc::c_ulong::from(request);
+            // SAFETY: `parm` points at the caller's command buffer, which is
+            // larger than zfs_cmd_t; its nvlist pointers are valid.
+            if unsafe { libc::ioctl(fd, req, &raw mut parm) } == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    mod os {
+        use std::io;
+
+        use anyhow::{
+            Context,
+            Result,
+            bail,
+        };
+
+        /// `ZFS_IOC_FIRST` on Linux: `'Z' << 8`.
+        const ZFS_IOC_FIRST: libc::Ioctl = 0x5a00;
+
+        /// Linux passes `zfs_cmd_t` directly and has no ioctl version to
+        /// check, so require OpenZFS 2.x or later, whose `zfs_cmd_t` head and
+        /// ioctl numbers we know.
+        pub fn check_version() -> Result<()> {
+            let version = std::fs::read_to_string("/sys/module/zfs/version")
+                .context("reading /sys/module/zfs/version (is the zfs module loaded?)")?;
+            let version = version.trim();
+            let major: u32 = version
+                .split('.')
+                .next()
+                .and_then(|m| m.parse().ok())
+                .with_context(|| format!("unexpected ZFS version {version:?}"))?;
+            if major < 2 {
+                bail!("unsupported ZFS version {version} (need OpenZFS 2.0 or later)");
+            }
+            Ok(())
+        }
+
+        /// Issues ZFS ioctl `request` with the `zfs_cmd_t` at `cmd`.
+        #[expect(unsafe_code, reason = "ZFS ioctl FFI")]
+        pub fn ioctl(fd: i32, request: u8, cmd: &mut [u64]) -> io::Result<()> {
+            let req = ZFS_IOC_FIRST | libc::Ioctl::from(request);
+            // SAFETY: `cmd` is larger than zfs_cmd_t, which the kernel copies
+            // in and out; its nvlist pointers are valid.
+            if unsafe { libc::ioctl(fd, req, cmd.as_mut_ptr()) } == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        }
+    }
 
     struct ZfsDev {
         file: File,
@@ -474,12 +722,7 @@ mod freebsd {
 
     impl ZfsDev {
         fn open() -> Result<Self> {
-            let version: i32 = Mib::new("vfs.zfs.version.ioctl")
-                .and_then(|m| m.read())
-                .context("reading vfs.zfs.version.ioctl (is zfs.ko loaded?)")?;
-            if u32::try_from(version).ok() != Some(ZFS_IOCVER_OZFS) {
-                bail!("unsupported ZFS ioctl version {version} (expected {ZFS_IOCVER_OZFS})");
-            }
+            os::check_version()?;
             Ok(Self {
                 file: File::open("/dev/zfs").context("opening /dev/zfs")?,
                 cmd: vec![0u64; CMD_WORDS]
@@ -499,7 +742,6 @@ mod freebsd {
 
         /// Runs a ZFS ioctl on `name`, returning the output nvlist bytes and
         /// `zc_cookie`. Retries with a bigger buffer on ENOMEM.
-        #[expect(unsafe_code, reason = "ZFS ioctl FFI")]
         fn ioctl(&mut self, request: u8, name: &str, cookie: u64) -> io::Result<(&[u8], u64)> {
             let name = CString::new(name).map_err(io::Error::other)?;
             loop {
@@ -519,32 +761,24 @@ mod freebsd {
                 head.nvlist_dst_size = dst_len;
                 head.cookie = cookie;
 
-                let mut parm = IocParm {
-                    version: ZFS_IOCVER_OZFS,
-                    cmd: self.cmd.as_mut_ptr() as u64,
-                    cmd_size: (CMD_WORDS * 8) as u64,
-                };
-                // _IOWR('Z', request, zfs_iocparm_t)
-                let req: libc::c_ulong = 0xC000_0000
-                    | ((size_of::<IocParm>() as libc::c_ulong & 0x1fff) << 16)
-                    | (libc::c_ulong::from(b'Z') << 8)
-                    | libc::c_ulong::from(request);
-                // SAFETY: `parm` points at our command buffer, which is larger
-                // than zfs_cmd_t, and `dst` is valid for `dst_len` bytes.
-                let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), req, &raw mut parm) };
-                if rc == 0 {
-                    let head = self.head();
-                    let len = usize::try_from(head.nvlist_dst_size).unwrap_or(usize::MAX);
-                    let cookie = head.cookie;
-                    let out = self
-                        .dst
-                        .get(..len)
-                        .ok_or_else(|| io::Error::other("nvlist larger than buffer"))?;
-                    return Ok((out, cookie));
-                }
-                let err = io::Error::last_os_error();
-                if err.raw_os_error() != Some(libc::ENOMEM) || self.dst.len() >= MAX_NVLIST {
-                    return Err(err);
+                match os::ioctl(self.file.as_raw_fd(), request, &mut self.cmd[..]) {
+                    Ok(()) => {
+                        let head = self.head();
+                        let len = usize::try_from(head.nvlist_dst_size).unwrap_or(usize::MAX);
+                        let cookie = head.cookie;
+                        let out = self
+                            .dst
+                            .get(..len)
+                            .ok_or_else(|| io::Error::other("nvlist larger than buffer"))?;
+                        return Ok((out, cookie));
+                    }
+                    Err(err)
+                        if err.raw_os_error() != Some(libc::ENOMEM)
+                            || self.dst.len() >= MAX_NVLIST =>
+                    {
+                        return Err(err);
+                    }
+                    Err(_) => {}
                 }
                 let wanted = usize::try_from(self.head().nvlist_dst_size).unwrap_or(0);
                 let new_len = wanted.max(self.dst.len() * 2).min(MAX_NVLIST);
@@ -553,107 +787,43 @@ mod freebsd {
         }
     }
 
-    struct KstatField {
-        metric: String,
-        kind: Kind,
-        signed: bool,
-        mib: Mib,
-    }
-
-    pub struct Zfs {
-        kstats: Vec<KstatField>,
-        dev: Option<ZfsDev>,
+    /// Pool list, space, health, I/O, vdev and scan metrics.
+    pub struct Pools {
+        dev: ZfsDev,
         vdevs: bool,
         generation: u64,
-        pools: Vec<String>,
-        states: HashMap<String, Mib>,
+        names: Vec<String>,
         counters: Monotonic,
     }
 
-    impl Zfs {
-        pub fn new(config: &Config) -> Result<Self> {
-            let mut kstats = Vec::new();
-            for kstat in &config.kstats {
-                let prefix = format!("kstat.zfs.misc.{kstat}");
-                let leaves = walk(&prefix).with_context(|| format!("listing {prefix}"))?;
-                tracing::debug!(kstat, leaves = leaves.len(), first = ?leaves.first().map(|l| (&l.name, l.kind)), "resolved kstat");
-                for leaf in leaves {
-                    let signed = match leaf.kind {
-                        libc::CTLTYPE_U64
-                        | libc::CTLTYPE_UINT
-                        | libc::CTLTYPE_U32
-                        | libc::CTLTYPE_ULONG => false,
-                        libc::CTLTYPE_S64
-                        | libc::CTLTYPE_INT
-                        | libc::CTLTYPE_S32
-                        | libc::CTLTYPE_LONG => true,
-                        _ => continue,
-                    };
-                    let Some(field) = leaf
-                        .name
-                        .strip_prefix(&prefix)
-                        .and_then(|f| f.strip_prefix('.'))
-                    else {
-                        continue;
-                    };
-                    let kind = if signed {
-                        Kind::Gauge
-                    } else {
-                        kstat_kind(kstat, field)
-                    };
-                    let metric = match kind {
-                        Kind::Counter => format!("zfs_{kstat}_{field}_total"),
-                        Kind::Gauge => format!("zfs_{kstat}_{field}"),
-                    };
-                    kstats.push(KstatField {
-                        metric,
-                        kind,
-                        signed,
-                        mib: leaf.mib,
-                    });
-                }
-            }
+    impl Pools {
+        pub fn new(vdevs: bool) -> Result<Self> {
             Ok(Self {
-                kstats,
-                dev: config.pools.then(ZfsDev::open).transpose()?,
-                vdevs: config.vdevs,
+                dev: ZfsDev::open()?,
+                vdevs,
                 generation: 0,
-                pools: Vec::new(),
-                states: HashMap::new(),
+                names: Vec::new(),
                 counters: Monotonic::default(),
             })
         }
 
-        fn collect_kstats(&self) -> Result<()> {
-            for field in &self.kstats {
-                if field.signed {
-                    gauge!(field.metric.clone()).set(field.mib.read_int()? as f64);
-                } else {
-                    let value = field.mib.read_uint()?;
-                    match field.kind {
-                        Kind::Counter => counter!(field.metric.clone()).absolute(value),
-                        Kind::Gauge => gauge!(field.metric.clone()).set(value as f64),
-                    }
-                }
-            }
-            Ok(())
+        pub fn names(&self) -> &[String] {
+            &self.names
         }
 
-        fn refresh_pool_list(&mut self) -> Result<()> {
-            let Some(dev) = &mut self.dev else {
-                return Ok(());
-            };
-            match dev.ioctl(ZFS_IOC_POOL_CONFIGS, "", self.generation) {
+        /// Updates the pool list; a no-op while the pool configuration
+        /// generation is unchanged.
+        pub fn refresh(&mut self) -> Result<()> {
+            match self.dev.ioctl(ZFS_IOC_POOL_CONFIGS, "", self.generation) {
                 Ok((bytes, generation)) => {
                     let configs = nvlist::unpack(bytes)?;
                     // Names starting with '$' are internal (e.g. "$import").
-                    self.pools = configs
+                    self.names = configs
                         .iter()
                         .map(|(n, _)| n.to_owned())
                         .filter(|n| !n.starts_with('$'))
                         .collect();
                     self.generation = generation;
-                    self.states.retain(|pool, _| self.pools.contains(pool));
                     Ok(())
                 }
                 Err(err) if err.raw_os_error() == Some(libc::EEXIST) => Ok(()),
@@ -661,29 +831,19 @@ mod freebsd {
             }
         }
 
-        fn collect_pool(&mut self, pool: &str) -> Result<()> {
-            let state = match self.states.get(pool) {
-                Some(mib) => mib.read_string(),
-                None => Mib::new(&format!("kstat.zfs.{pool}.misc.state")).and_then(|mib| {
-                    let state = mib.read_string();
-                    self.states.insert(pool.to_owned(), mib);
-                    state
-                }),
-            }
-            .with_context(|| format!("reading health of pool {pool}"))?;
+        /// Exports the metrics of `pool`, whose health is `state`.
+        pub fn collect(&mut self, pool: &str, state: &str) -> Result<()> {
             for s in STATES {
                 gauge!("zfs_pool_health", "pool" => pool.to_owned(), "state" => s)
                     .set(f64::from(u8::from(s == state)));
             }
-            if !STATES.contains(&state.as_str()) {
-                gauge!("zfs_pool_health", "pool" => pool.to_owned(), "state" => state.clone())
+            if !STATES.contains(&state) {
+                gauge!("zfs_pool_health", "pool" => pool.to_owned(), "state" => state.to_owned())
                     .set(1.0);
             }
 
-            let Some(dev) = &mut self.dev else {
-                return Ok(());
-            };
-            let (bytes, _) = dev
+            let (bytes, _) = self
+                .dev
                 .ioctl(ZFS_IOC_POOL_GET_PROPS, pool, 0)
                 .with_context(|| format!("getting properties of pool {pool}"))?;
             let props = pool_props(&nvlist::unpack(bytes)?);
@@ -703,7 +863,8 @@ mod freebsd {
             set("zfs_pool_dedup_ratio", props.dedup_ratio);
 
             // POOL_STATS returns the config even for faulted pools.
-            let (bytes, _) = dev
+            let (bytes, _) = self
+                .dev
                 .ioctl(ZFS_IOC_POOL_STATS, pool, 0)
                 .with_context(|| format!("getting stats of pool {pool}"))?;
             let config = nvlist::unpack(bytes)?;
@@ -754,6 +915,124 @@ mod freebsd {
             }
             Ok(())
         }
+
+        pub fn prune(&mut self) {
+            self.counters.prune();
+        }
+    }
+}
+
+#[cfg(target_os = "freebsd")]
+mod freebsd {
+    use std::collections::HashMap;
+
+    use anyhow::{
+        Context,
+        Result,
+    };
+    use metrics::{
+        counter,
+        gauge,
+    };
+
+    use super::{
+        Config,
+        Kind,
+        describe,
+        kstat_metric,
+        native::Pools,
+    };
+    use crate::{
+        collector::Collector,
+        sys::freebsd::{
+            Mib,
+            walk,
+        },
+    };
+
+    struct KstatField {
+        metric: String,
+        kind: Kind,
+        signed: bool,
+        mib: Mib,
+    }
+
+    pub struct Zfs {
+        kstats: Vec<KstatField>,
+        pools: Option<Pools>,
+        states: HashMap<String, Mib>,
+    }
+
+    impl Zfs {
+        pub fn new(config: &Config) -> Result<Self> {
+            let mut kstats = Vec::new();
+            for kstat in &config.kstats {
+                let prefix = format!("kstat.zfs.misc.{kstat}");
+                let leaves = walk(&prefix).with_context(|| format!("listing {prefix}"))?;
+                tracing::debug!(kstat, leaves = leaves.len(), first = ?leaves.first().map(|l| (&l.name, l.kind)), "resolved kstat");
+                for leaf in leaves {
+                    let signed = match leaf.kind {
+                        libc::CTLTYPE_U64
+                        | libc::CTLTYPE_UINT
+                        | libc::CTLTYPE_U32
+                        | libc::CTLTYPE_ULONG => false,
+                        libc::CTLTYPE_S64
+                        | libc::CTLTYPE_INT
+                        | libc::CTLTYPE_S32
+                        | libc::CTLTYPE_LONG => true,
+                        _ => continue,
+                    };
+                    let Some(field) = leaf
+                        .name
+                        .strip_prefix(&prefix)
+                        .and_then(|f| f.strip_prefix('.'))
+                    else {
+                        continue;
+                    };
+                    let (metric, kind) = kstat_metric(kstat, field, signed);
+                    kstats.push(KstatField {
+                        metric,
+                        kind,
+                        signed,
+                        mib: leaf.mib,
+                    });
+                }
+            }
+            Ok(Self {
+                kstats,
+                pools: config.pools.then(|| Pools::new(config.vdevs)).transpose()?,
+                states: HashMap::new(),
+            })
+        }
+
+        fn collect_kstats(&self) -> Result<()> {
+            for field in &self.kstats {
+                if field.signed {
+                    gauge!(field.metric.clone()).set(field.mib.read_int()? as f64);
+                } else {
+                    let value = field.mib.read_uint()?;
+                    match field.kind {
+                        Kind::Counter => counter!(field.metric.clone()).absolute(value),
+                        Kind::Gauge => gauge!(field.metric.clone()).set(value as f64),
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Pool health from `kstat.zfs.<pool>.misc.state`, which the kernel
+    /// computes with the same logic `zpool list` uses.
+    fn pool_state(states: &mut HashMap<String, Mib>, pool: &str) -> Result<String> {
+        match states.get(pool) {
+            Some(mib) => mib.read_string(),
+            None => Mib::new(&format!("kstat.zfs.{pool}.misc.state")).and_then(|mib| {
+                let state = mib.read_string();
+                states.insert(pool.to_owned(), mib);
+                state
+            }),
+        }
+        .with_context(|| format!("reading health of pool {pool}"))
     }
 
     impl Collector for Zfs {
@@ -767,18 +1046,161 @@ mod freebsd {
 
         async fn collect(&mut self) -> Result<()> {
             self.collect_kstats()?;
-            if self.dev.is_none() {
+            let Some(pools) = &mut self.pools else {
                 return Ok(());
-            }
-            self.refresh_pool_list()?;
+            };
+            pools.refresh()?;
+            self.states.retain(|pool, _| pools.names().contains(pool));
             // Report every pool even if one fails, then return the first error.
             let mut first_error = None;
-            for pool in self.pools.clone() {
-                if let Err(err) = self.collect_pool(&pool) {
+            for pool in pools.names().to_vec() {
+                let result = pool_state(&mut self.states, &pool)
+                    .and_then(|state| pools.collect(&pool, &state));
+                if let Err(err) = result {
                     first_error.get_or_insert(err);
                 }
             }
-            self.counters.prune();
+            pools.prune();
+            first_error.map_or(Ok(()), Err)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::collections::HashMap;
+
+    use anyhow::{
+        Context,
+        Result,
+        anyhow,
+        bail,
+    };
+    use metrics::{
+        counter,
+        gauge,
+    };
+
+    use super::{
+        Config,
+        Kind,
+        KstatValue,
+        describe,
+        kstat_metric,
+        kstat_rows,
+        native::Pools,
+    };
+    use crate::{
+        collector::Collector,
+        sys::linux::read_into,
+    };
+
+    /// Where the SPL exports ZFS kstats as text files.
+    const KSTAT_DIR: &str = "/proc/spl/kstat/zfs";
+
+    struct Field {
+        metric: String,
+        kind: Kind,
+    }
+
+    /// One kstat file. Fields are resolved at startup, like the FreeBSD
+    /// sysctl walk; fields that appear later are ignored.
+    struct Kstat {
+        path: String,
+        fields: HashMap<String, Field>,
+    }
+
+    pub struct Zfs {
+        kstats: Vec<Kstat>,
+        pools: Option<Pools>,
+        buf: String,
+    }
+
+    impl Zfs {
+        pub fn new(config: &Config) -> Result<Self> {
+            let mut buf = String::new();
+            let mut kstats = Vec::new();
+            for kstat in &config.kstats {
+                if kstat.is_empty() || kstat.contains('/') || kstat.starts_with('.') {
+                    bail!("invalid kstat name {kstat:?}");
+                }
+                let path = format!("{KSTAT_DIR}/{kstat}");
+                read_into(&path, &mut buf)
+                    .with_context(|| format!("reading {path} (is the zfs module loaded?)"))?;
+                let fields = kstat_rows(&buf)
+                    .map_err(|err| anyhow!("{path}: {err}"))?
+                    .map(|row| {
+                        let signed = matches!(row.value, KstatValue::Signed(_));
+                        let (metric, kind) = kstat_metric(kstat, row.name, signed);
+                        (row.name.to_owned(), Field { metric, kind })
+                    })
+                    .collect();
+                kstats.push(Kstat { path, fields });
+            }
+            Ok(Self {
+                kstats,
+                pools: config.pools.then(|| Pools::new(config.vdevs)).transpose()?,
+                buf,
+            })
+        }
+
+        fn collect_kstats(&mut self) -> Result<()> {
+            for kstat in &self.kstats {
+                read_into(&kstat.path, &mut self.buf)
+                    .with_context(|| format!("reading {}", kstat.path))?;
+                let rows = kstat_rows(&self.buf).map_err(|err| anyhow!("{}: {err}", kstat.path))?;
+                for row in rows {
+                    let Some(field) = kstat.fields.get(row.name) else {
+                        continue;
+                    };
+                    match (row.value, field.kind) {
+                        (KstatValue::Unsigned(v), Kind::Counter) => {
+                            counter!(field.metric.clone()).absolute(v);
+                        }
+                        (KstatValue::Unsigned(v), Kind::Gauge) => {
+                            gauge!(field.metric.clone()).set(v as f64);
+                        }
+                        (KstatValue::Signed(v), _) => gauge!(field.metric.clone()).set(v as f64),
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Pool health from `/proc/spl/kstat/zfs/<pool>/state`, which the kernel
+    /// computes with the same logic `zpool list` uses.
+    fn pool_state(buf: &mut String, pool: &str) -> Result<String> {
+        read_into(format!("{KSTAT_DIR}/{pool}/state"), buf)
+            .with_context(|| format!("reading health of pool {pool}"))?;
+        Ok(buf.trim().to_owned())
+    }
+
+    impl Collector for Zfs {
+        fn name(&self) -> &'static str {
+            "zfs"
+        }
+
+        fn describe(&self) {
+            describe();
+        }
+
+        async fn collect(&mut self) -> Result<()> {
+            self.collect_kstats()?;
+            let Some(pools) = &mut self.pools else {
+                return Ok(());
+            };
+            pools.refresh()?;
+            // Report every pool even if one fails, then return the first error.
+            let mut first_error = None;
+            for pool in pools.names().to_vec() {
+                let result =
+                    pool_state(&mut self.buf, &pool).and_then(|state| pools.collect(&pool, &state));
+                if let Err(err) = result {
+                    first_error.get_or_insert(err);
+                }
+            }
+            pools.prune();
             first_error.map_or(Ok(()), Err)
         }
     }
@@ -963,5 +1385,88 @@ mod tests {
             vdev_name("tank", &unpack(&buf).unwrap()).as_deref(),
             Some("raidz2-1")
         );
+    }
+
+    #[test]
+    fn parses_linux_kstats() {
+        // From OpenZFS 2.4.4 on Linux.
+        let text = include_str!("testdata/linux/arcstats");
+        let rows: Vec<_> = kstat_rows(text).unwrap().collect();
+        assert_eq!(rows.len(), 148);
+        assert_eq!(rows[0].name, "hits");
+        assert!(matches!(rows[0].value, KstatValue::Unsigned(n) if n > 0));
+        let available = rows
+            .iter()
+            .find(|r| r.name == "memory_available_bytes")
+            .unwrap();
+        assert_eq!(available.value, KstatValue::Signed(29_024_224_768));
+
+        let zfetch: Vec<_> = kstat_rows(include_str!("testdata/linux/zfetchstats"))
+            .unwrap()
+            .collect();
+        assert_eq!(zfetch.len(), 8);
+        assert_eq!(
+            zfetch[4],
+            KstatRow {
+                name: "misses",
+                value: KstatValue::Unsigned(16_887_809),
+            }
+        );
+
+        // Strings are skipped; raw and I/O kstats are rejected.
+        let mixed = "1 1 0x01 2 0 0 0\nname type data\nlabel 7 abc\nn 1 -5\n";
+        let rows: Vec<_> = kstat_rows(mixed).unwrap().collect();
+        assert_eq!(
+            rows,
+            [KstatRow {
+                name: "n",
+                value: KstatValue::Signed(-5),
+            }]
+        );
+        assert!(kstat_rows("5 3 0x01 1 0 0 0\nreads writes\n").is_err());
+        assert!(kstat_rows("").is_err());
+    }
+
+    #[test]
+    fn exports_signed_kstats_as_gauges() {
+        assert_eq!(
+            kstat_metric("arcstats", "hits", false),
+            ("zfs_arcstats_hits_total".to_owned(), Kind::Counter)
+        );
+        assert_eq!(
+            kstat_metric("arcstats", "memory_available_bytes", true),
+            (
+                "zfs_arcstats_memory_available_bytes".to_owned(),
+                Kind::Gauge
+            )
+        );
+    }
+
+    #[test]
+    fn names_linux_disks_like_zpool() {
+        let by_id = "/dev/disk/by-id/nvme-Samsung_SSD_970_EVO_Plus_1TB_S4EWNJ0N102017X_1-part1";
+        assert_eq!(
+            linux_disk_name(by_id, false),
+            "nvme-Samsung_SSD_970_EVO_Plus_1TB_S4EWNJ0N102017X_1-part1"
+        );
+        assert_eq!(
+            linux_disk_name(by_id, true),
+            "nvme-Samsung_SSD_970_EVO_Plus_1TB_S4EWNJ0N102017X_1"
+        );
+        assert_eq!(linux_disk_name("/dev/sda1", true), "sda");
+        assert_eq!(linux_disk_name("/dev/sda1", false), "sda1");
+        assert_eq!(linux_disk_name("/dev/nvme0n1p1", true), "nvme0n1");
+        assert_eq!(linux_disk_name("/dev/xvdb9", true), "xvdb");
+        assert_eq!(linux_disk_name("/dev/vdc", true), "vdc");
+        assert_eq!(linux_disk_name("/dev/mapper/crypt-a", true), "crypt-a");
+        assert_eq!(linux_disk_name("/dev/disk/by-vdev/A0", false), "A0");
+        // Only whole directory names are stripped.
+        assert_eq!(linux_disk_name("/devices/x", false), "/devices/x");
+        // No digits after the partition marker: nothing to strip.
+        assert_eq!(
+            linux_disk_name("/dev/disk/by-id/foo-part", true),
+            "foo-part"
+        );
+        assert_eq!(linux_disk_name("/dev/sdx", true), "sdx");
     }
 }

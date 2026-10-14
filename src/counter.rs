@@ -13,10 +13,10 @@
 //! reset. System-wide counters that only reset at reboot (when calipers
 //! restarts too) don't need this.
 
-// Used by the FreeBSD collectors (and tests).
+// Used by the FreeBSD and Linux collectors (and tests).
 #![cfg_attr(
-    not(target_os = "freebsd"),
-    expect(dead_code, reason = "used by the FreeBSD implementation")
+    not(any(target_os = "freebsd", target_os = "linux")),
+    expect(dead_code, reason = "used by the FreeBSD and Linux implementations")
 )]
 
 use std::{

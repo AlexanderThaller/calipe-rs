@@ -16,10 +16,10 @@
 //!
 //! Only decoding is supported. Values are borrowed from the input buffer.
 
-// Used by the FreeBSD ZFS collector (and tests).
+// Used by the ZFS collector (and tests).
 #![cfg_attr(
-    not(target_os = "freebsd"),
-    expect(dead_code, reason = "used by the FreeBSD implementation")
+    not(any(target_os = "freebsd", target_os = "linux")),
+    expect(dead_code, reason = "used by the FreeBSD and Linux implementations")
 )]
 
 use std::fmt;
