@@ -112,6 +112,13 @@ add(
        [(f'sum by (state) (processes{{{S}, state!~"sleeping|idle"}})', "{{state}}")], x=16, w=8,
        desc="Sleeping and idle (kernel threads) left out, they dwarf the rest."),
 )
+add(
+    ts("Average CPU frequency by host", [(f'avg by (host) (cpu_frequency_hertz{{{S}}})', "{{host}}")],
+       unit="hertz", x=0, w=12, desc="Mean clock over all cores. Needs frequency = true in [inputs.cpu]."),
+    ts("CPU frequency per core (selected hosts)",
+       [(f'max by (host, cpu) (cpu_frequency_hertz{{{S}}})', "{{host}} cpu{{cpu}}")],
+       unit="hertz", x=12, w=12),
+)
 
 # ---------------------------------------------------------------- Memory
 row("Memory")

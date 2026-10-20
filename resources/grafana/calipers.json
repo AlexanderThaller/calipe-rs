@@ -2042,21 +2042,143 @@
       }
     },
     {
-      "type": "row",
+      "type": "timeseries",
       "id": 22,
+      "title": "Average CPU frequency by host",
+      "description": "Mean clock over all cores. Needs frequency = true in [inputs.cpu].",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "avg by (host) (cpu_frequency_hertz{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"})",
+          "refId": "A",
+          "legendFormat": "{{host}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "hertz",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 23,
+      "title": "CPU frequency per core (selected hosts)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (host, cpu) (cpu_frequency_hertz{job=~\"$job\", realm=~\"$realm\", host=~\"$host\"})",
+          "refId": "A",
+          "legendFormat": "{{host}} cpu{{cpu}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "hertz",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMin": 0
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 24,
       "title": "Memory",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 37
       },
       "panels": []
     },
     {
       "type": "timeseries",
-      "id": 23,
+      "id": 25,
       "title": "Memory used by host",
       "description": "1 - available / physical. ARC counts as available.",
       "datasource": {
@@ -2067,7 +2189,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 30
+        "y": 38
       },
       "targets": [
         {
@@ -2119,7 +2241,7 @@
     },
     {
       "type": "timeseries",
-      "id": 24,
+      "id": 26,
       "title": "Memory by state (selected hosts)",
       "description": "FreeBSD page queues. ZFS ARC is part of wired, see the next panel.",
       "datasource": {
@@ -2130,7 +2252,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 30
+        "y": 38
       },
       "targets": [
         {
@@ -2184,7 +2306,7 @@
     },
     {
       "type": "timeseries",
-      "id": 25,
+      "id": 27,
       "title": "ZFS ARC and swap by host",
       "description": "",
       "datasource": {
@@ -2195,7 +2317,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 30
+        "y": 38
       },
       "targets": [
         {
@@ -2254,20 +2376,20 @@
     },
     {
       "type": "row",
-      "id": 26,
+      "id": 28,
       "title": "Storage",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 46
       },
       "panels": []
     },
     {
       "type": "timeseries",
-      "id": 27,
+      "id": 29,
       "title": "Filesystem and pool usage",
       "description": "",
       "datasource": {
@@ -2278,7 +2400,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 39
+        "y": 47
       },
       "targets": [
         {
@@ -2355,7 +2477,7 @@
     },
     {
       "type": "timeseries",
-      "id": 28,
+      "id": 30,
       "title": "Disk throughput by host",
       "description": "Reads up, writes down. Sum over all disks.",
       "datasource": {
@@ -2366,7 +2488,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 39
+        "y": 47
       },
       "targets": [
         {
@@ -2438,7 +2560,7 @@
     },
     {
       "type": "timeseries",
-      "id": 29,
+      "id": 31,
       "title": "Busiest disk by host",
       "description": "Busy share of the busiest disk per host (devstat busy time).",
       "datasource": {
@@ -2449,7 +2571,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 39
+        "y": 47
       },
       "targets": [
         {
@@ -2501,7 +2623,7 @@
     },
     {
       "type": "timeseries",
-      "id": 30,
+      "id": 32,
       "title": "Disk operations by host",
       "description": "Reads up, writes down.",
       "datasource": {
@@ -2512,7 +2634,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 47
+        "y": 55
       },
       "targets": [
         {
@@ -2584,7 +2706,7 @@
     },
     {
       "type": "timeseries",
-      "id": 31,
+      "id": 33,
       "title": "Disk latency by device",
       "description": "Average time per read or write operation.",
       "datasource": {
@@ -2595,7 +2717,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 47
+        "y": 55
       },
       "targets": [
         {
@@ -2645,7 +2767,7 @@
     },
     {
       "type": "timeseries",
-      "id": 32,
+      "id": 34,
       "title": "ZFS pool I/O by host",
       "description": "Reads up, writes down.",
       "datasource": {
@@ -2656,7 +2778,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 47
+        "y": 55
       },
       "targets": [
         {
@@ -2728,20 +2850,20 @@
     },
     {
       "type": "row",
-      "id": 33,
+      "id": 35,
       "title": "Network",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 55
+        "y": 63
       },
       "panels": []
     },
     {
       "type": "timeseries",
-      "id": 34,
+      "id": 36,
       "title": "Traffic by host",
       "description": "All interfaces except loopback. In up, out down.",
       "datasource": {
@@ -2752,7 +2874,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 56
+        "y": 64
       },
       "targets": [
         {
@@ -2824,7 +2946,7 @@
     },
     {
       "type": "timeseries",
-      "id": 35,
+      "id": 37,
       "title": "Errors and drops by host",
       "description": "",
       "datasource": {
@@ -2835,7 +2957,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 56
+        "y": 64
       },
       "targets": [
         {
@@ -2894,7 +3016,7 @@
     },
     {
       "type": "timeseries",
-      "id": 36,
+      "id": 38,
       "title": "TCP connections and pf states by host",
       "description": "",
       "datasource": {
@@ -2905,7 +3027,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 56
+        "y": 64
       },
       "targets": [
         {
@@ -2973,20 +3095,20 @@
     },
     {
       "type": "row",
-      "id": 37,
+      "id": 39,
       "title": "Health",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 64
+        "y": 72
       },
       "panels": []
     },
     {
       "type": "table",
-      "id": 38,
+      "id": 40,
       "title": "Problems",
       "description": "Everything that is unhealthy right now: ZFS pools and vdevs not ONLINE, failing SMART health, failing HTTP and DNS probes, unsynchronized clocks. Empty means all good.",
       "datasource": {
@@ -2997,7 +3119,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 65
+        "y": 73
       },
       "targets": [
         {
@@ -3102,7 +3224,7 @@
     },
     {
       "type": "table",
-      "id": 39,
+      "id": 41,
       "title": "Disks",
       "description": "SMART health per drive. Drives in standby are not woken up and keep their last values.",
       "datasource": {
@@ -3113,7 +3235,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 65
+        "y": 73
       },
       "targets": [
         {
@@ -3479,7 +3601,7 @@
     },
     {
       "type": "timeseries",
-      "id": 40,
+      "id": 42,
       "title": "Clock offset by host",
       "description": "",
       "datasource": {
@@ -3490,7 +3612,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 73
+        "y": 81
       },
       "targets": [
         {
@@ -3549,7 +3671,7 @@
     },
     {
       "type": "timeseries",
-      "id": 41,
+      "id": 43,
       "title": "Disk temperature",
       "description": "",
       "datasource": {
@@ -3560,7 +3682,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 73
+        "y": 81
       },
       "targets": [
         {
@@ -3610,7 +3732,7 @@
     },
     {
       "type": "timeseries",
-      "id": 42,
+      "id": 44,
       "title": "ZFS and disk errors",
       "description": "Only series with errors appear.",
       "datasource": {
@@ -3621,7 +3743,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 73
+        "y": 81
       },
       "targets": [
         {
@@ -3690,19 +3812,19 @@
     },
     {
       "type": "row",
-      "id": 43,
+      "id": 45,
       "title": "Probes",
       "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 81
+        "y": 89
       },
       "panels": [
         {
           "type": "table",
-          "id": 44,
+          "id": 46,
           "title": "HTTP probes",
           "description": "Latency averaged over the selected time range.",
           "datasource": {
@@ -3713,7 +3835,7 @@
             "h": 9,
             "w": 12,
             "x": 0,
-            "y": 82
+            "y": 90
           },
           "targets": [
             {
@@ -3982,7 +4104,7 @@
         },
         {
           "type": "table",
-          "id": 45,
+          "id": 47,
           "title": "DNS probes",
           "description": "Latency averaged over the selected time range.",
           "datasource": {
@@ -3993,7 +4115,7 @@
             "h": 9,
             "w": 12,
             "x": 12,
-            "y": 82
+            "y": 90
           },
           "targets": [
             {
@@ -4211,7 +4333,7 @@
         },
         {
           "type": "timeseries",
-          "id": 46,
+          "id": 48,
           "title": "HTTP latency p95",
           "description": "",
           "datasource": {
@@ -4222,7 +4344,7 @@
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 91
+            "y": 99
           },
           "targets": [
             {
@@ -4272,7 +4394,7 @@
         },
         {
           "type": "timeseries",
-          "id": 47,
+          "id": 49,
           "title": "DNS latency p95",
           "description": "",
           "datasource": {
@@ -4283,7 +4405,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 91
+            "y": 99
           },
           "targets": [
             {
@@ -4335,19 +4457,19 @@
     },
     {
       "type": "row",
-      "id": 48,
+      "id": 50,
       "title": "Monitored processes",
       "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 99
+        "y": 107
       },
       "panels": [
         {
           "type": "timeseries",
-          "id": 49,
+          "id": 51,
           "title": "CPU by process",
           "description": "Summed over all PIDs and modes; 1 = one full CPU.",
           "datasource": {
@@ -4358,7 +4480,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 100
+            "y": 108
           },
           "targets": [
             {
@@ -4408,7 +4530,7 @@
         },
         {
           "type": "timeseries",
-          "id": 50,
+          "id": 52,
           "title": "Resident memory by process",
           "description": "",
           "datasource": {
@@ -4419,7 +4541,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 100
+            "y": 108
           },
           "targets": [
             {
@@ -4469,7 +4591,7 @@
         },
         {
           "type": "timeseries",
-          "id": 51,
+          "id": 53,
           "title": "Open files by process",
           "description": "",
           "datasource": {
@@ -4480,7 +4602,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 100
+            "y": 108
           },
           "targets": [
             {
@@ -4532,19 +4654,19 @@
     },
     {
       "type": "row",
-      "id": 52,
+      "id": 54,
       "title": "calipers agent",
       "collapsed": true,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 108
+        "y": 116
       },
       "panels": [
         {
           "type": "timeseries",
-          "id": 53,
+          "id": 55,
           "title": "Collector duration p99",
           "description": "Slowest hosts dominate.",
           "datasource": {
@@ -4555,7 +4677,7 @@
             "h": 8,
             "w": 8,
             "x": 0,
-            "y": 109
+            "y": 117
           },
           "targets": [
             {
@@ -4605,7 +4727,7 @@
         },
         {
           "type": "timeseries",
-          "id": 54,
+          "id": 56,
           "title": "Collector errors",
           "description": "Only collectors with errors appear.",
           "datasource": {
@@ -4616,7 +4738,7 @@
             "h": 8,
             "w": 8,
             "x": 8,
-            "y": 109
+            "y": 117
           },
           "targets": [
             {
@@ -4667,7 +4789,7 @@
         },
         {
           "type": "timeseries",
-          "id": 55,
+          "id": 57,
           "title": "calipers CPU and memory by host",
           "description": "",
           "datasource": {
@@ -4678,7 +4800,7 @@
             "h": 8,
             "w": 8,
             "x": 16,
-            "y": 109
+            "y": 117
           },
           "targets": [
             {
