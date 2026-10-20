@@ -1,8 +1,10 @@
 = calipe-rs
 
-`calipers` is a lightweight system metrics agent for FreeBSD that exposes a Prometheus endpoint. It
-replaces a Telegraf setup (see `resources/telegraf.conf`) and reads everything in-process through
-sysctl and ioctl: no `zpool`, `pfctl`, `smartctl` or `chronyc` processes. Design notes, metric
+`calipers` is a lightweight system metrics agent for FreeBSD and Linux that exposes a Prometheus
+endpoint. It replaces a Telegraf setup (see `resources/telegraf.conf`) and reads everything
+in-process through sysctl and ioctl (FreeBSD) or procfs, sysfs, netlink and ioctl (Linux): no
+`zpool`, `pfctl`, `smartctl` or `chronyc` processes. Every input except `pf` runs on both; the Linux
+differences are in link:dev.adoc#linux[`dev.adoc`]. Design notes, metric
 definitions and verification details are in link:dev.adoc[`dev.adoc`].
 
 == Deploy
@@ -42,7 +44,9 @@ a shell with the toolchain, rust-analyzer and `protoc`. On NixOS, import the mod
             openFirewall = true;
             settings = {
               exporter.listen = "0.0.0.0:9273";
-              inputs.internal = { };
+              inputs.cpu = { };
+              inputs.mem = { };
+              inputs.disk = { };
               inputs.http_response = [ { urls = [ "https://example.org/" ]; } ];
             };
           };
@@ -53,11 +57,12 @@ a shell with the toolchain, rust-analyzer and `protoc`. On NixOS, import the mod
 }
 ----
 
-`settings` is rendered to TOML (or set `configFile`). The unit runs as a dynamic user with systemd
-hardening, checks the config before starting, and `systemctl reload calipers` sends SIGHUP. On Linux
-only the `internal`, `http_response`, `dns_query` and `chrony` inputs exist; the others are
-FreeBSD-only and fail the config check. `nix flake check` runs the tests and a NixOS VM test of the
-module.
+`settings` is rendered to TOML (or set `configFile`). The unit checks the config before starting,
+and `systemctl reload calipers` sends SIGHUP. It runs as root with only `CAP_SYS_PTRACE` and
+`CAP_DAC_READ_SEARCH` (procstat of other users), plus `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN` when
+`settings` enables smart (option `capabilities`). It deliberately has no mount namespace
+(`ProtectSystem`, `PrivateTmp`, `DynamicUser`, ...), because the disk input must see the host's
+mounts. `nix flake check` runs the tests and a NixOS VM test with every Linux input.
 
 == Service
 

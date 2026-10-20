@@ -29,6 +29,38 @@ macro_rules! freebsd_only {
     };
 }
 
+/// Defines a stand-in for a collector implemented on FreeBSD and Linux whose
+/// constructor fails on other platforms, so enabling it there is a startup
+/// error.
+macro_rules! native_only {
+    ($ty:ident, $name:literal) => {
+        #[cfg(not(any(target_os = "freebsd", target_os = "linux")))]
+        pub struct $ty;
+
+        #[cfg(not(any(target_os = "freebsd", target_os = "linux")))]
+        impl $ty {
+            pub fn new(_config: &Config) -> anyhow::Result<Self> {
+                anyhow::bail!(concat!(
+                    "the ",
+                    $name,
+                    " input is only supported on FreeBSD and Linux"
+                ))
+            }
+        }
+
+        #[cfg(not(any(target_os = "freebsd", target_os = "linux")))]
+        impl $crate::collector::Collector for $ty {
+            fn name(&self) -> &'static str {
+                $name
+            }
+
+            async fn collect(&mut self) -> anyhow::Result<()> {
+                unreachable!("constructor always fails on this platform")
+            }
+        }
+    };
+}
+
 pub mod chrony;
 pub mod cpu;
 pub mod disk;

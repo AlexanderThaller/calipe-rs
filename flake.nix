@@ -101,28 +101,7 @@
 
       checks = forAllSystems (pkgs: {
         inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) calipers;
-        nixos-module = pkgs.testers.runNixOSTest {
-          name = "calipers";
-          nodes.machine = {
-            imports = [ self.nixosModules.default ];
-            services.calipers = {
-              enable = true;
-              settings = {
-                agent.interval = "1s";
-                exporter.listen = "127.0.0.1:9273";
-                inputs.internal = { };
-              };
-            };
-          };
-          testScript = ''
-            machine.wait_for_unit("calipers.service")
-            machine.wait_for_open_port(9273)
-            machine.wait_until_succeeds("curl -sf http://127.0.0.1:9273/metrics | grep -q '^calipers_'")
-            machine.succeed("systemctl reload calipers.service")
-            machine.wait_until_succeeds("journalctl -u calipers.service | grep -q 'configuration reloaded'")
-            machine.succeed("systemctl is-active calipers.service")
-          '';
-        };
+        nixos-module = import ./nix/tests/module.nix { inherit self pkgs; };
       });
     };
 }

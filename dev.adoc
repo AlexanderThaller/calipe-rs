@@ -22,8 +22,7 @@ everything else is my proposed default.
 .Non-goals
 * Config compatibility with Telegraf. We use our own config format (close to Telegraf's).
 * Plugins beyond what the config uses. Adding a module later should be easy.
-* Linux support for the system collectors. Portable modules (DNS, HTTP, chrony, exec, smart, pf/zpool
-  parsing) work on Linux anyway, which helps local testing.
+* pf on Linux. Every other input also runs on Linux (NixOS hosts), see <<linux>>.
 
 == Architecture
 
@@ -444,6 +443,132 @@ plus `agent.interval`. Unchanged inputs keep their task and collector, so per-ob
 the `Monotonic` reset offsets survives; new and changed inputs are built first (any failure aborts
 the reload untouched), then old tasks are aborted and new ones spawned. Global labels, the listener
 and the idle timeout are fixed when the exporter is built, so changes to them need a restart.
+
+[[linux]]
+== Linux
+
+Every input except pf has a Linux implementation, deployed on NixOS through the flake's module
+(`nix/module.nix`). The rules are the same as on FreeBSD: no helper processes, procfs/sysfs reads,
+netlink and ioctls only. Metric names are shared where the meaning matches; label values use
+Linux's own names (the kernel's, or the tools' where the kernel has none), so a dashboard works on
+both for most panels. Metrics a platform doesn't
+have are absent, not zero.
+
+[cols="1,4"]
+|===
+|Module |Linux source and differences from FreeBSD
+
+|cpu
+|`/proc/stat` `cpuN` and `cpu` lines in USER_HZ ticks. Modes: user, nice, system, idle, iowait, irq,
+softirq, steal (guest time is already in user and nice). Opt-in temperature from hwmon: coretemp
+`Core N` per core, k10temp `Tdie`/`Tctl` per package. Opt-in frequency from
+`cpufreq/scaling_cur_freq`. Matches `/proc/stat` divided by `getconf CLK_TCK`.
+
+|mem
+|`/proc/meminfo`, `/proc/zoneinfo`, `/proc/vmstat`, `/proc/spl/kstat/zfs/arcstats`. `mem_bytes{state}`
+partitions `MemTotal` without overlap into free, the LRU lists (active_anon, inactive_anon,
+active_file, inactive_file, unevictable), slab_reclaimable, slab_unreclaimable, kernel_stack,
+page_tables, hugetlb and other (allocator pages, vmalloc, per-CPU, and the ZFS ARC, which Linux
+doesn't account). `Cached`/`Shmem`/`Mapped` overlap the LRU lists and are left out.
+`mem_physical_bytes` is the zones' `present` memory, `mem_buffer_bytes` is `Buffers`,
+`mem_user_wired_bytes` is `Mlocked`. `mem_available_bytes` = `MemAvailable` + ARC above `c_min`
+(minus any part the kernel already counts as reclaimable). kswapd is the page daemon:
+`mem_free_target_bytes` is the sum of the low watermarks, wakeups are `pageoutrun` and scanned pages
+`pgscan_kswapd`. Linux adds `mem_direct_reclaim_{stalls,scanned_pages}_total`.
+
+|swap
+|`/proc/swaps` for `swap_{total,used}_bytes{device}` (device without `/dev/`, or the swap file's
+path), `pswpin`/`pswpout` from `/proc/vmstat` times the page size. Matches `swapon --show --bytes`.
+
+|system
+|getloadavg(3), boot time from `/proc/stat` `btime`, online CPUs (`_SC_NPROCESSORS_ONLN`), users from
+utmp as `who` counts them (0 where nothing writes utmp).
+
+|kernel
+|`/proc/stat` `ctxt`, `intr` and `softirq` totals as `kernel_interrupts_total{type="irq"|"softirq"}`,
+and `processes` as `kernel_forks_total{type="clone"}` (all new tasks, threads included). No syscall or trap counters
+exist on Linux. Matches `vmstat -s`.
+
+|disk
+|`/proc/self/mountinfo` (octal escapes decoded), then statvfs(3) per mount on the blocking pool. A
+mount point that is mounted over is reported once, for the topmost mount. Mounts calipers may not
+stat (`EACCES`/`EPERM`, `ENOTCONN` for a dead FUSE daemon) are skipped. Linux pseudo filesystems
+(proc, sysfs, cgroup/cgroup2, devpts, debugfs, tracefs, securityfs, pstore, bpf, configfs, fusectl,
+mqueue, hugetlbfs, autofs, binfmt_misc, efivarfs, nsfs, rpc_pipefs, selinuxfs) are always skipped;
+tmpfs, devtmpfs and overlay count as real, as in Telegraf. `mode` is `ro` if the mount or superblock
+is read-only. Matches `df -a -B1`.
+
+|diskio
+|`/proc/diskstats`; types read, write, discard, flush (FreeBSD: free, other); sectors are 512 bytes. The 32-bit
+millisecond times and `io_ticks` are accumulated from wrapping deltas, and a re-attached device
+continues on its old totals. By default only whole disks from `/sys/block`, without loop or ram
+devices that never did I/O; `devices` takes exact names, including partitions. Matches `vmstat -d`.
+
+|net
+|One rtnetlink `RTM_GETLINK` dump per collection (`IFLA_STATS64`, operational state; what
+`ip -s link` reads), plus `/sys/class/net/<if>/speed`. No `net_sent_multicast_packets_total` (Linux
+doesn't count it). `net_receive_drops_total` is `rx_dropped + rx_missed_errors` as in
+`/proc/net/dev`. `net_link_up` follows the operational state: up = 1, unknown (typical for virtual
+interfaces) = absent, otherwise 0. Matches `ip -s -s link`.
+
+|netstat
+|Linux keeps no per-state TCP counts: one `NETLINK_SOCK_DIAG` dump per address family without
+extensions, records counted by state (what `ss -ta` reads). Labels are the Linux netstat(8) names
+(ESTABLISHED, SYN_SENT, SYN_RECV, FIN_WAIT1, FIN_WAIT2, TIME_WAIT, CLOSE, CLOSE_WAIT, LAST_ACK,
+LISTEN, CLOSING), all 11 always present, handshake request sockets counted as SYN_RECV.
+`netstat_udp_sockets` = `UDP: inuse` + `UDP6: inuse` from `/proc/net/sockstat{,6}`. Both cover
+calipers' network namespace. Matches `ss -tan` and `ss -s`.
+
+|processes + procstat
+|`/proc` is listed once per interval and every `/proc/<pid>/stat` read; `/proc/<pid>/status` only for
+processes a query can match (effective UID, VmRSS, context switches), `/proc/<pid>/io` and the
+`/proc/<pid>/fd` directory only for matched ones. States are the kernel's names from
+`/proc/<pid>/status`: running (R), sleeping (S), disk_sleep (D), idle (I: idle kernel threads, not
+FreeBSD's "asleep > 20 s"), stopped (T), tracing_stop (t), zombie (Z), dead (X), parked (P).
+Context switches are `type="voluntary"|"nonvoluntary"`, as in `status`. Names are cut at 15 characters and restored from argv[0];
+`pattern` matches the cmdline joined by spaces. Storage I/O is
+`procstat_block_io_bytes_total{op}` (`read_bytes`/`write_bytes`, includes reaped children) instead of
+`procstat_block_io_total`. Other users' io and fd need `CAP_SYS_PTRACE`. Matches ps(1), pgrep(1).
+
+|zfs
+|kstats from `/proc/spl/kstat/zfs/<kstat>` (fields found at startup, signed fields always gauges,
+otherwise the same counter/gauge rules; each OS exports its own field set). Pool health from
+`/proc/spl/kstat/zfs/<pool>/state`. Pools use the same `ZFS_IOC_POOL_CONFIGS`, `POOL_GET_PROPS` and
+`POOL_STATS` ioctls and nvlist decoding; Linux passes `zfs_cmd_t` directly (request `0x5a00 + n`,
+4096-byte `MAXPATHLEN`) and needs OpenZFS 2.x. Vdev names follow `zpool status` on Linux
+(`/dev/disk/by-*` and whole-disk partition suffixes stripped). Matches `zpool list -Hp`,
+`zpool status` and `zpool iostat -Hp`.
+
+|smart
+|SATA disks (`sdX` whose SCSI vendor is `ATA`) through `SG_IO` with ATA PASS-THROUGH (16); CHECK POWER
+MODE and SMART RETURN STATUS read the result registers from the sense data (descriptor or fixed
+format). NVMe controllers (`nvmeN`) through `NVME_IOCTL_ADMIN_CMD` (IDENTIFY CONTROLLER, log page
+02h). Discovery from `/sys/block` and `/sys/class/nvme`. Needs `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN`.
+USB bridges are skipped. Matches smartctl on QEMU-emulated AHCI and NVMe drives.
+
+|chrony, dns_query, http_response, internal
+|Portable, unchanged.
+
+|pf
+|FreeBSD only.
+|===
+
+=== NixOS
+
+`nix/module.nix` runs calipers as root with a reduced capability set (`CAP_SYS_PTRACE`,
+`CAP_DAC_READ_SEARCH`, plus `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN` when smart is enabled). It avoids
+every systemd option that creates a mount namespace (`DynamicUser`, `ProtectSystem`, `PrivateTmp`,
+`PrivateDevices`, `ProtectKernel*`, ...): disk would otherwise report the unit's private mount table
+with read-only remounts, and smart and zfs need the device nodes.
+
+=== Verification
+
+Each collector was compared against the system's tools on an Arch Linux desktop (kernel 7.2,
+OpenZFS 2.4.4) as listed above. `nix flake check` runs the unit tests and a NixOS VM test
+(`nix/tests/module.nix`) that enables every Linux input under the module's sandbox, with an
+emulated AHCI SATA disk, an NVMe controller and a file-backed ZFS pool, and compares disk, procstat,
+zfs and smart values with df, ps, zpool and smartctl. Not yet verified: SMART on real hardware,
+scrub/resilver metrics, mirror/raidz/degraded pools, and multi-socket temperature mapping.
 
 [[testing]]
 == Testing and verification

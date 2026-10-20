@@ -1,28 +1,44 @@
 //! Process counts by state (`[inputs.processes]`) and per-process resource
 //! usage for selected processes (`[[inputs.procstat]]`).
 //!
-//! Both come from one `kern.proc.proc` read per interval (one `kinfo_proc`
-//! per process). States follow ps(1)'s `state` column. procstat queries
-//! select processes like pgrep(1): `exe` is a regex on the process name,
-//! `pattern` a regex on the full command line, `user` the owner's name.
-//!
-//! Process names in `kinfo_proc` are cut to 19 characters (`COMMLEN`); for
-//! names at that limit the full name is taken from `argv[0]` when it starts
-//! with the truncated one, so `exe = "http_responsetime_exporter"` matches.
+//! procstat queries select processes like pgrep(1): `exe` is a regex on the
+//! process name, `pattern` a regex on the full command line (arguments joined
+//! by spaces), `user` the owner's (effective) user name.
 //!
 //! With `tag_with = ["pid"]` every process is its own series. Otherwise
 //! matching processes are summed per `(query, process_name, user)`. Counters
 //! in that mode are accumulated from per-process increments, so a process
 //! exiting doesn't make the totals drop.
+//!
+//! FreeBSD: both come from one `kern.proc.proc` read per interval (one
+//! `kinfo_proc` per process). States follow ps(1)'s `state` column. Process
+//! names in `kinfo_proc` are cut to 19 characters (`COMMLEN`); for names at
+//! that limit the full name is taken from `argv[0]` when it starts with the
+//! truncated one, so `exe = "http_responsetime_exporter"` matches.
+//!
+//! Linux: one `/proc/<pid>/stat` read per process and interval gives the
+//! state, name, CPU times, page faults, threads, start time and memory.
+//! Only processes a query can match read more: `/proc/<pid>/status` (owner,
+//! context switches), and for matched ones `/proc/<pid>/io` (bytes read from
+//! and written to storage) and the `/proc/<pid>/fd` directory. `io` and `fd`
+//! of other users' processes need root (or `CAP_SYS_PTRACE`); without access
+//! there are no `procstat_open_fds` and the I/O counters stay 0. Names
+//! (`comm`) are cut to 15 characters (`TASK_COMM_LEN`) and restored from
+//! `/proc/<pid>/cmdline` like on FreeBSD. States are those of the process's
+//! main thread, with the kernel's names from `/proc/<pid>/status`: `running`
+//! (R), `sleeping` (S), `disk_sleep` (D, uninterruptible), `idle` (I, idle
+//! kernel threads; not FreeBSD's "asleep for more than 20 s"), `stopped` (T),
+//! `tracing_stop` (t), `zombie` (Z), `dead` (X) and `parked` (P).
 
-// The helpers are only used by the FreeBSD implementation (and tests).
+// The helpers are only used by the platform implementations (and tests).
 #![cfg_attr(
-    not(target_os = "freebsd"),
-    expect(dead_code, reason = "used by the FreeBSD implementation")
+    not(any(target_os = "freebsd", target_os = "linux")),
+    expect(dead_code, reason = "used by the FreeBSD and Linux implementations")
 )]
 
 use std::{
     collections::HashMap,
+    ffi::CStr,
     time::{
         Duration,
         Instant,
@@ -34,11 +50,15 @@ use anyhow::{
     bail,
 };
 use metrics::{
+    counter,
     describe_counter,
     describe_gauge,
+    gauge,
 };
 use regex::Regex;
 use serde::Deserialize;
+
+use crate::counter::Monotonic;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,9 +84,15 @@ pub struct ProcstatConfig {
 }
 
 pub fn describe() {
+    #[cfg(not(target_os = "linux"))]
     describe_gauge!(
         "processes",
         "Processes by state, as in ps(1) (idle = sleeping for more than 20s)."
+    );
+    #[cfg(target_os = "linux")]
+    describe_gauge!(
+        "processes",
+        "Processes by state of their main thread, as in proc(5) (idle = idle kernel thread)."
     );
     describe_gauge!("processes_threads", "Threads in all processes.");
     describe_gauge!(
@@ -85,13 +111,25 @@ pub fn describe() {
         "procstat_start_time_seconds",
         "Unix time the (oldest) process started."
     );
+    #[cfg(not(target_os = "linux"))]
     describe_counter!(
         "procstat_context_switches_total",
         "Voluntary and involuntary context switches."
     );
+    #[cfg(target_os = "linux")]
+    describe_counter!(
+        "procstat_context_switches_total",
+        "Voluntary and nonvoluntary context switches."
+    );
+    #[cfg(not(target_os = "linux"))]
     describe_counter!(
         "procstat_block_io_total",
         "Block input/output operations (filesystem reads/writes)."
+    );
+    #[cfg(target_os = "linux")]
+    describe_counter!(
+        "procstat_block_io_bytes_total",
+        "Bytes read from and written to storage (/proc/<pid>/io read_bytes, write_bytes)."
     );
     describe_counter!(
         "procstat_page_faults_total",
@@ -100,6 +138,10 @@ pub fn describe() {
 }
 
 /// ps(1) state letters and the label names used for them.
+#[cfg_attr(
+    all(not(target_os = "freebsd"), not(test)),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 pub const STATES: [(char, &str); 8] = [
     ('R', "running"),
     ('S', "sleeping"),
@@ -112,6 +154,10 @@ pub const STATES: [(char, &str); 8] = [
 ];
 
 /// `state()` from `bin/ps/print.c`, first letter only.
+#[cfg_attr(
+    all(not(target_os = "freebsd"), not(test)),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 pub fn state_char(stat: i8, tdflags: i64, slptime: u32) -> char {
     const SIDL: i8 = 1;
     const SRUN: i8 = 2;
@@ -141,8 +187,42 @@ pub fn state_char(stat: i8, tdflags: i64, slptime: u32) -> char {
     }
 }
 
-/// `COMMLEN` from `sys/param.h`.
+/// Linux `/proc/<pid>/stat` state letters and their names in
+/// `/proc/<pid>/status` (`task_state_array` in `fs/proc/array.c`), with
+/// spaces as underscores.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux implementation")
+)]
+pub const LINUX_STATES: [(&str, &str); 9] = [
+    ("R", "running"),
+    ("S", "sleeping"),
+    ("I", "idle"),
+    ("D", "disk_sleep"),
+    ("T", "stopped"),
+    ("t", "tracing_stop"),
+    ("Z", "zombie"),
+    ("Xx", "dead"),
+    ("P", "parked"),
+];
+
+/// Index into [`LINUX_STATES`] for a state letter.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux implementation")
+)]
+pub fn linux_state(c: char) -> Option<usize> {
+    LINUX_STATES
+        .iter()
+        .position(|(letters, _)| letters.contains(c))
+}
+
+/// Length at which the kernel cuts process names: `COMMLEN` from
+/// `sys/param.h` on FreeBSD, `TASK_COMM_LEN - 1` on Linux.
+#[cfg(not(target_os = "linux"))]
 pub const COMMLEN: usize = 19;
+#[cfg(target_os = "linux")]
+pub const COMMLEN: usize = 15;
 
 /// The untruncated name: `argv[0]`'s basename if `comm` was cut at
 /// [`COMMLEN`] and is a prefix of it.
@@ -175,11 +255,24 @@ pub struct Proc {
 }
 
 /// Integer counters per process: (metric, label name, label value).
+#[cfg(not(target_os = "linux"))]
 pub const COUNTERS: [(&str, &str, &str); 6] = [
     ("procstat_context_switches_total", "type", "voluntary"),
     ("procstat_context_switches_total", "type", "involuntary"),
     ("procstat_block_io_total", "op", "read"),
     ("procstat_block_io_total", "op", "write"),
+    ("procstat_page_faults_total", "type", "major"),
+    ("procstat_page_faults_total", "type", "minor"),
+];
+
+/// Integer counters per process: (metric, label name, label value). Linux
+/// counts storage I/O in bytes, not operations.
+#[cfg(target_os = "linux")]
+pub const COUNTERS: [(&str, &str, &str); 6] = [
+    ("procstat_context_switches_total", "type", "voluntary"),
+    ("procstat_context_switches_total", "type", "nonvoluntary"),
+    ("procstat_block_io_bytes_total", "op", "read"),
+    ("procstat_block_io_bytes_total", "op", "write"),
     ("procstat_page_faults_total", "type", "major"),
     ("procstat_page_faults_total", "type", "minor"),
 ];
@@ -233,12 +326,17 @@ impl Query {
     }
 
     pub fn matches(&self, p: &Proc) -> bool {
+        self.matches_ignoring_user(p) && self.user.as_ref().is_none_or(|u| *u == p.user)
+    }
+
+    /// [`Self::matches`] without the user condition, for deciding whether
+    /// the owner is worth looking up.
+    pub fn matches_ignoring_user(&self, p: &Proc) -> bool {
         self.exe.as_ref().is_none_or(|re| re.is_match(&p.name))
             && self
                 .pattern
                 .as_ref()
                 .is_none_or(|re| p.cmdline.as_deref().is_some_and(|c| re.is_match(c)))
-            && self.user.as_ref().is_none_or(|u| *u == p.user)
     }
 }
 
@@ -366,6 +464,10 @@ impl Aggregator {
 }
 
 /// Counts descriptors (`kf_fd >= 0`) in packed `kinfo_file` records.
+#[cfg_attr(
+    all(not(target_os = "freebsd"), not(test)),
+    expect(dead_code, reason = "used by the FreeBSD implementation")
+)]
 pub fn count_fds(buf: &[u8]) -> Option<u64> {
     let int_at = |at: usize| {
         buf.get(at..at + 4)
@@ -401,17 +503,371 @@ pub fn queries(configs: &[ProcstatConfig]) -> Result<Vec<Query>> {
     Ok(out)
 }
 
-#[cfg(not(target_os = "freebsd"))]
-pub struct Processes;
+/// procstat queries and their export state, shared by the platform
+/// implementations.
+pub struct Procstat {
+    queries: Vec<Query>,
+    users: HashMap<u32, String>,
+    aggregator: Aggregator,
+    counters: Monotonic,
+}
 
-#[cfg(not(target_os = "freebsd"))]
-impl Processes {
-    pub fn new(_states: bool, _procstat: &[ProcstatConfig]) -> Result<Self> {
-        bail!("the processes and procstat inputs are only supported on FreeBSD")
+impl Procstat {
+    pub fn new(configs: &[ProcstatConfig]) -> Result<Self> {
+        Ok(Self {
+            queries: queries(configs)?,
+            users: HashMap::new(),
+            aggregator: Aggregator::default(),
+            counters: Monotonic::default(),
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queries.is_empty()
+    }
+
+    /// Whether any query matches on the command line.
+    pub fn needs_cmdline(&self) -> bool {
+        self.queries.iter().any(Query::needs_cmdline)
+    }
+
+    /// Whether any query can match `p` once its user is known.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "used by the Linux implementation")
+    )]
+    pub fn may_match(&self, p: &Proc) -> bool {
+        self.queries.iter().any(|q| q.matches_ignoring_user(p))
+    }
+
+    pub fn user_name(&mut self, uid: u32) -> String {
+        self.users
+            .entry(uid)
+            .or_insert_with(|| lookup_user(uid))
+            .clone()
+    }
+
+    /// Exports every query. `enrich` fills in details that are only worth
+    /// reading for matched processes (e.g. open descriptors).
+    pub fn export(&mut self, procs: &[Proc], mut enrich: impl FnMut(&mut Proc)) {
+        let now = Instant::now();
+        let queries = std::mem::take(&mut self.queries);
+        for query in &queries {
+            let mut matched: Vec<Proc> =
+                procs.iter().filter(|p| query.matches(p)).cloned().collect();
+            for p in &mut matched {
+                enrich(p);
+            }
+            gauge!("procstat_lookup_pids", "query" => query.label.clone())
+                .set(matched.len() as f64);
+            if query.tag_pid {
+                self.export_per_pid(&query.label, &matched);
+            } else {
+                self.export_aggregated(&query.label, &matched, now);
+            }
+        }
+        self.queries = queries;
+        self.aggregator.prune(now);
+        self.counters.prune();
+    }
+
+    /// One series per process (`tag_with = ["pid"]`).
+    fn export_per_pid(&mut self, query: &str, matched: &[Proc]) {
+        for p in matched {
+            let labels = [
+                ("query", query.to_owned()),
+                ("process_name", p.name.clone()),
+                ("user", p.user.clone()),
+                ("pid", p.pid.to_string()),
+            ];
+            export_gauges(&labels, &Gauges::of(p));
+            let id = format!("{query}\0{}\0{}", p.pid, p.name);
+            for ((metric, key, value), raw) in COUNTERS.iter().zip(p.counters) {
+                // The pid may be reused by a new process with the same name.
+                let v = self
+                    .counters
+                    .correct(&format!("{id}\0{metric}\0{value}"), raw);
+                counter!(*metric, with_label(&labels, key, value).as_slice()).absolute(v);
+            }
+        }
+    }
+
+    /// Sums per (query, process name, user).
+    fn export_aggregated(&mut self, query: &str, matched: &[Proc], now: Instant) {
+        let refs: Vec<&Proc> = matched.iter().collect();
+        for g in self.aggregator.update(query, &refs, now) {
+            let labels = [
+                ("query", g.query.clone()),
+                ("process_name", g.name.clone()),
+                ("user", g.user.clone()),
+            ];
+            export_gauges(
+                &labels,
+                &Gauges {
+                    cpu: g.totals.cpu,
+                    rss: g.rss_bytes,
+                    virt: g.virtual_bytes,
+                    threads: g.threads,
+                    fds: g.open_fds,
+                    start_time: g.start_time,
+                },
+            );
+            for ((metric, key, value), total) in COUNTERS.iter().zip(g.totals.counts) {
+                counter!(*metric, with_label(&labels, key, value).as_slice()).absolute(total);
+            }
+        }
     }
 }
 
-#[cfg(not(target_os = "freebsd"))]
+#[expect(unsafe_code, reason = "getpwuid_r(3) FFI")]
+fn lookup_user(uid: u32) -> String {
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut buf = [0 as libc::c_char; 1024];
+    let mut result = std::ptr::null_mut();
+    // SAFETY: all pointers are valid for the given sizes.
+    let rc = unsafe {
+        libc::getpwuid_r(
+            uid,
+            pwd.as_mut_ptr(),
+            buf.as_mut_ptr(),
+            buf.len(),
+            &raw mut result,
+        )
+    };
+    if rc != 0 || result.is_null() {
+        return uid.to_string();
+    }
+    // SAFETY: getpwuid_r succeeded, so `result` points at `pwd`.
+    let name = unsafe { (*result).pw_name };
+    if name.is_null() {
+        return uid.to_string();
+    }
+    // SAFETY: a non-null pw_name is a NUL-terminated string in `buf`.
+    unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Point-in-time values exported as gauges.
+struct Gauges {
+    cpu: [f64; 2],
+    rss: u64,
+    virt: u64,
+    threads: u64,
+    fds: Option<u64>,
+    start_time: f64,
+}
+
+impl Gauges {
+    fn of(p: &Proc) -> Self {
+        Self {
+            cpu: [p.cpu_user, p.cpu_system],
+            rss: p.rss_bytes,
+            virt: p.virtual_bytes,
+            threads: u64::from(p.threads),
+            fds: p.open_fds,
+            start_time: p.start_time,
+        }
+    }
+}
+
+fn with_label(
+    labels: &[(&'static str, String)],
+    key: &'static str,
+    value: &str,
+) -> Vec<(&'static str, String)> {
+    labels
+        .iter()
+        .cloned()
+        .chain([(key, value.to_owned())])
+        .collect()
+}
+
+fn export_gauges(labels: &[(&'static str, String)], g: &Gauges) {
+    gauge!(
+        "procstat_cpu_seconds_total",
+        with_label(labels, "mode", "user").as_slice()
+    )
+    .set(g.cpu[0]);
+    gauge!(
+        "procstat_cpu_seconds_total",
+        with_label(labels, "mode", "system").as_slice()
+    )
+    .set(g.cpu[1]);
+    gauge!("procstat_memory_rss_bytes", labels).set(g.rss as f64);
+    gauge!("procstat_memory_virtual_bytes", labels).set(g.virt as f64);
+    gauge!("procstat_threads", labels).set(g.threads as f64);
+    if let Some(fds) = g.fds {
+        gauge!("procstat_open_fds", labels).set(fds as f64);
+    }
+    gauge!("procstat_start_time_seconds", labels).set(g.start_time);
+}
+
+/// Fields of `/proc/<pid>/stat` (proc(5)). Times are in clock ticks
+/// (`_SC_CLK_TCK`). The `rss` field isn't used: on current kernels it can be
+/// far off the `VmRSS` that `status`, `statm`, `smaps_rollup` and ps(1) agree
+/// on.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux implementation")
+)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinuxStat<'a> {
+    pub comm: &'a str,
+    pub state: char,
+    pub flags: u64,
+    pub minflt: u64,
+    pub majflt: u64,
+    pub utime: u64,
+    pub stime: u64,
+    pub threads: u32,
+    pub starttime: u64,
+    pub vsize: u64,
+}
+
+/// `PF_KTHREAD` in [`LinuxStat::flags`]: kernel threads have no command line.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux implementation")
+)]
+pub const PF_KTHREAD: u64 = 0x0020_0000;
+
+/// Parses `/proc/<pid>/stat`. The name is in parentheses and may contain
+/// spaces and `)`, so the fields start after the last `)`.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux implementation")
+)]
+pub fn parse_linux_stat(text: &str) -> Option<LinuxStat<'_>> {
+    let open = text.find('(')?;
+    let close = text.rfind(')')?;
+    let comm = text.get(open + 1..close)?;
+    let mut fields = text.get(close + 1..)?.split_ascii_whitespace();
+    let state = fields.next()?.chars().next()?;
+    // Fields 4 (ppid) to 23 (vsize); some (priority, nice) can be negative.
+    let mut v = [0i64; 20];
+    for slot in &mut v {
+        *slot = fields.next()?.parse().ok()?;
+    }
+    // Field n is at v[n - 4].
+    let u = |n: usize| u64::try_from(v[n - 4]).unwrap_or(0);
+    Some(LinuxStat {
+        comm,
+        state,
+        flags: u(9),
+        minflt: u(10),
+        majflt: u(12),
+        utime: u(14),
+        stime: u(15),
+        threads: u32::try_from(u(20)).unwrap_or(u32::MAX),
+        starttime: u(22),
+        vsize: u(23),
+    })
+}
+
+/// What procstat needs from `/proc/<pid>/status`.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux implementation")
+)]
+#[derive(Debug, Default, PartialEq)]
+pub struct LinuxStatus {
+    /// Effective user ID (the second `Uid:` value), like FreeBSD's `ki_uid`.
+    pub euid: u32,
+    /// `VmRSS`; 0 for kernel threads, which have none.
+    pub rss_bytes: u64,
+    pub voluntary_ctxt_switches: u64,
+    pub nonvoluntary_ctxt_switches: u64,
+}
+
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux implementation")
+)]
+pub fn parse_linux_status(text: &str) -> Option<LinuxStatus> {
+    let mut status = LinuxStatus::default();
+    let mut uid = None;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        match key {
+            "Uid" => uid = value.split_ascii_whitespace().nth(1)?.parse().ok(),
+            "VmRSS" => {
+                let kib: u64 = value.trim().strip_suffix(" kB")?.trim().parse().ok()?;
+                status.rss_bytes = kib * 1024;
+            }
+            "voluntary_ctxt_switches" => {
+                status.voluntary_ctxt_switches = value.trim().parse().ok()?;
+            }
+            "nonvoluntary_ctxt_switches" => {
+                status.nonvoluntary_ctxt_switches = value.trim().parse().ok()?;
+            }
+            _ => {}
+        }
+    }
+    status.euid = uid?;
+    Some(status)
+}
+
+/// `read_bytes` and `write_bytes` from `/proc/<pid>/io`: bytes the process
+/// caused to be fetched from or sent to storage.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux implementation")
+)]
+pub fn parse_linux_io(text: &str) -> Option<(u64, u64)> {
+    let (mut read, mut write) = (None, None);
+    for line in text.lines() {
+        match line.split_once(": ") {
+            Some(("read_bytes", v)) => read = v.trim().parse().ok(),
+            Some(("write_bytes", v)) => write = v.trim().parse().ok(),
+            _ => {}
+        }
+    }
+    Some((read?, write?))
+}
+
+/// `btime` (boot time, Unix seconds) from `/proc/stat`.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux implementation")
+)]
+pub fn parse_btime(proc_stat: &str) -> Option<u64> {
+    proc_stat
+        .lines()
+        .find_map(|l| l.strip_prefix("btime "))?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// `/proc/<pid>/cmdline` (NUL-separated argv) joined by spaces, empty
+/// arguments dropped as on FreeBSD; `None` if there are no arguments.
+#[cfg_attr(
+    all(not(target_os = "linux"), not(test)),
+    expect(dead_code, reason = "used by the Linux implementation")
+)]
+pub fn join_cmdline(raw: &[u8]) -> Option<String> {
+    let args: Vec<_> = raw
+        .split(|&b| b == 0)
+        .filter(|a| !a.is_empty())
+        .map(String::from_utf8_lossy)
+        .collect();
+    (!args.is_empty()).then(|| args.join(" "))
+}
+
+#[cfg(not(any(target_os = "freebsd", target_os = "linux")))]
+pub struct Processes;
+
+#[cfg(not(any(target_os = "freebsd", target_os = "linux")))]
+impl Processes {
+    pub fn new(_states: bool, _procstat: &[ProcstatConfig]) -> Result<Self> {
+        bail!("the processes and procstat inputs are only supported on FreeBSD and Linux")
+    }
+}
+
+#[cfg(not(any(target_os = "freebsd", target_os = "linux")))]
 impl crate::collector::Collector for Processes {
     fn name(&self) -> &'static str {
         "processes"
@@ -427,38 +883,27 @@ pub use freebsd::Processes;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
-    use std::{
-        collections::HashMap,
-        ffi::CStr,
-        time::Instant,
-    };
+    use std::ffi::CStr;
 
     use anyhow::{
         Context,
         Result,
         bail,
     };
-    use metrics::{
-        counter,
-        gauge,
-    };
+    use metrics::gauge;
 
     use super::{
-        Aggregator,
-        COUNTERS,
         Proc,
+        Procstat,
         ProcstatConfig,
-        Query,
         STATES,
         count_fds,
         describe,
         full_name,
-        queries,
         state_char,
     };
     use crate::{
         collector::Collector,
-        counter::Monotonic,
         sys::{
             freebsd::{
                 Mib,
@@ -475,26 +920,20 @@ mod freebsd {
 
     pub struct Processes {
         states: bool,
-        queries: Vec<Query>,
+        procstat: Procstat,
         page_size: u64,
         buf: Vec<u8>,
         args_buf: Vec<u8>,
-        users: HashMap<u32, String>,
-        aggregator: Aggregator,
-        counters: Monotonic,
     }
 
     impl Processes {
         pub fn new(states: bool, procstat: &[ProcstatConfig]) -> Result<Self> {
             Ok(Self {
                 states,
-                queries: queries(procstat)?,
+                procstat: Procstat::new(procstat)?,
                 page_size: page_size(),
                 buf: Vec::new(),
                 args_buf: Vec::new(),
-                users: HashMap::new(),
-                aggregator: Aggregator::default(),
-                counters: Monotonic::default(),
             })
         }
 
@@ -530,42 +969,6 @@ mod freebsd {
                 .collect();
             (!args.is_empty()).then(|| args.join(" "))
         }
-
-        fn user_name(&mut self, uid: u32) -> String {
-            self.users
-                .entry(uid)
-                .or_insert_with(|| lookup_user(uid))
-                .clone()
-        }
-    }
-
-    #[expect(unsafe_code, reason = "getpwuid_r(3) FFI")]
-    fn lookup_user(uid: u32) -> String {
-        let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
-        let mut buf = [0 as libc::c_char; 1024];
-        let mut result = std::ptr::null_mut();
-        // SAFETY: all pointers are valid for the given sizes.
-        let rc = unsafe {
-            libc::getpwuid_r(
-                uid,
-                pwd.as_mut_ptr(),
-                buf.as_mut_ptr(),
-                buf.len(),
-                &raw mut result,
-            )
-        };
-        if rc != 0 || result.is_null() {
-            return uid.to_string();
-        }
-        // SAFETY: getpwuid_r succeeded, so `result` points at `pwd`.
-        let name = unsafe { (*result).pw_name };
-        if name.is_null() {
-            return uid.to_string();
-        }
-        // SAFETY: a non-null pw_name is a NUL-terminated string in `buf`.
-        unsafe { CStr::from_ptr(name) }
-            .to_string_lossy()
-            .into_owned()
     }
 
     fn cstr(chars: &[libc::c_char]) -> &str {
@@ -610,7 +1013,7 @@ mod freebsd {
         /// Converts the table into [`Proc`]s, fetching argv only where needed:
         /// for `pattern` queries and to restore truncated names.
         fn snapshot(&mut self, table: &[libc::kinfo_proc]) -> Vec<Proc> {
-            let want_cmdline = self.queries.iter().any(Query::needs_cmdline);
+            let want_cmdline = self.procstat.needs_cmdline();
             let mut procs = Vec::with_capacity(table.len());
             for kp in table {
                 let comm = cstr(&kp.ki_comm).to_owned();
@@ -629,7 +1032,7 @@ mod freebsd {
                     pid: kp.ki_pid,
                     name,
                     cmdline,
-                    user: self.user_name(kp.ki_uid),
+                    user: self.procstat.user_name(kp.ki_uid),
                     threads: u32::try_from(kp.ki_numthreads).unwrap_or(0),
                     rss_bytes: u64::try_from(kp.ki_rssize).unwrap_or(0) * self.page_size,
                     virtual_bytes: kp.ki_size as u64,
@@ -649,54 +1052,6 @@ mod freebsd {
             }
             procs
         }
-
-        /// One series per process (`tag_with = ["pid"]`).
-        fn export_per_pid(&mut self, query: &str, matched: &[Proc]) {
-            for p in matched {
-                let labels = [
-                    ("query", query.to_owned()),
-                    ("process_name", p.name.clone()),
-                    ("user", p.user.clone()),
-                    ("pid", p.pid.to_string()),
-                ];
-                export_gauges(&labels, &Gauges::of(p));
-                let id = format!("{query}\0{}\0{}", p.pid, p.name);
-                for ((metric, key, value), raw) in COUNTERS.iter().zip(p.counters) {
-                    // The pid may be reused by a new process with the same
-                    // name.
-                    let v = self
-                        .counters
-                        .correct(&format!("{id}\0{metric}\0{value}"), raw);
-                    counter!(*metric, with_label(&labels, key, value).as_slice()).absolute(v);
-                }
-            }
-        }
-
-        /// Sums per (query, process name, user).
-        fn export_aggregated(&mut self, query: &str, matched: &[Proc], now: Instant) {
-            let refs: Vec<&Proc> = matched.iter().collect();
-            for g in self.aggregator.update(query, &refs, now) {
-                let labels = [
-                    ("query", g.query.clone()),
-                    ("process_name", g.name.clone()),
-                    ("user", g.user.clone()),
-                ];
-                export_gauges(
-                    &labels,
-                    &Gauges {
-                        cpu: g.totals.cpu,
-                        rss: g.rss_bytes,
-                        virt: g.virtual_bytes,
-                        threads: g.threads,
-                        fds: g.open_fds,
-                        start_time: g.start_time,
-                    },
-                );
-                for ((metric, key, value), total) in COUNTERS.iter().zip(g.totals.counts) {
-                    counter!(*metric, with_label(&labels, key, value).as_slice()).absolute(total);
-                }
-            }
-        }
     }
 
     impl Collector for Processes {
@@ -713,86 +1068,225 @@ mod freebsd {
             if self.states {
                 Self::export_states(&table);
             }
-            if self.queries.is_empty() {
+            if self.procstat.is_empty() {
                 return Ok(());
             }
             let procs = self.snapshot(&table);
-            let now = Instant::now();
-            let queries = std::mem::take(&mut self.queries);
-            for query in &queries {
-                let mut matched: Vec<Proc> =
-                    procs.iter().filter(|p| query.matches(p)).cloned().collect();
-                for p in &mut matched {
-                    p.open_fds = open_fds(p.pid, &mut self.args_buf);
-                }
-                gauge!("procstat_lookup_pids", "query" => query.label.clone())
-                    .set(matched.len() as f64);
-                if query.tag_pid {
-                    self.export_per_pid(&query.label, &matched);
-                } else {
-                    self.export_aggregated(&query.label, &matched, now);
-                }
-            }
-            self.queries = queries;
-            self.aggregator.prune(now);
-            self.counters.prune();
+            let buf = &mut self.args_buf;
+            self.procstat
+                .export(&procs, |p| p.open_fds = open_fds(p.pid, buf));
             Ok(())
         }
     }
+}
 
-    /// Point-in-time values exported as gauges.
-    struct Gauges {
-        cpu: [f64; 2],
-        rss: u64,
-        virt: u64,
-        threads: u64,
-        fds: Option<u64>,
-        start_time: f64,
+#[cfg(target_os = "linux")]
+pub use linux::Processes;
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::{
+        fmt::Write as _,
+        io::Read as _,
+    };
+
+    use anyhow::{
+        Context,
+        Result,
+    };
+    use metrics::gauge;
+
+    use super::{
+        COMMLEN,
+        LINUX_STATES,
+        PF_KTHREAD,
+        Proc,
+        Procstat,
+        ProcstatConfig,
+        describe,
+        full_name,
+        join_cmdline,
+        linux_state,
+        parse_btime,
+        parse_linux_io,
+        parse_linux_stat,
+        parse_linux_status,
+    };
+    use crate::{
+        collector::Collector,
+        sys::linux::read_into,
+    };
+
+    pub struct Processes {
+        states: bool,
+        procstat: Procstat,
+        /// Clock ticks per second, the unit of CPU and start times.
+        clk_tck: f64,
+        /// Boot time (Unix seconds), read once so start times (which also
+        /// identify processes across collections) stay stable.
+        btime: f64,
+        path: String,
+        text: String,
+        bytes: Vec<u8>,
     }
 
-    impl Gauges {
-        fn of(p: &Proc) -> Self {
-            Self {
-                cpu: [p.cpu_user, p.cpu_system],
-                rss: p.rss_bytes,
-                virt: p.virtual_bytes,
-                threads: u64::from(p.threads),
-                fds: p.open_fds,
-                start_time: p.start_time,
+    #[expect(unsafe_code, reason = "sysconf(3) FFI")]
+    fn clock_ticks() -> Result<f64> {
+        // SAFETY: sysconf has no preconditions.
+        let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if ticks <= 0 {
+            anyhow::bail!("sysconf(_SC_CLK_TCK) failed");
+        }
+        Ok(ticks as f64)
+    }
+
+    impl Processes {
+        pub fn new(states: bool, procstat: &[ProcstatConfig]) -> Result<Self> {
+            let mut text = String::new();
+            read_into("/proc/stat", &mut text).context("reading /proc/stat")?;
+            let btime = parse_btime(&text).context("no btime in /proc/stat")?;
+            Ok(Self {
+                states,
+                procstat: Procstat::new(procstat)?,
+                clk_tck: clock_ticks()?,
+                btime: btime as f64,
+                path: String::new(),
+                text,
+                bytes: Vec::new(),
+            })
+        }
+
+        /// Reads `/proc/<pid>/<file>` into `self.text`.
+        fn read_text(&mut self, pid: i32, file: &str) -> std::io::Result<()> {
+            self.path.clear();
+            let _ = write!(self.path, "/proc/{pid}/{file}");
+            read_into(&self.path, &mut self.text)
+        }
+
+        /// `/proc/<pid>/cmdline`, or `None` (exited, no arguments).
+        fn cmdline(&mut self, pid: i32) -> Option<String> {
+            self.path.clear();
+            let _ = write!(self.path, "/proc/{pid}/cmdline");
+            self.bytes.clear();
+            std::fs::File::open(&self.path)
+                .and_then(|mut f| f.read_to_end(&mut self.bytes))
+                .ok()?;
+            join_cmdline(&self.bytes)
+        }
+
+        /// Fills in the owner and context switches, which only
+        /// `/proc/<pid>/status` has. `false` if the process is gone.
+        fn read_status(&mut self, p: &mut Proc) -> bool {
+            if self.read_text(p.pid, "status").is_err() {
+                return false;
             }
+            let Some(status) = parse_linux_status(&self.text) else {
+                return false;
+            };
+            p.user = self.procstat.user_name(status.euid);
+            p.rss_bytes = status.rss_bytes;
+            p.counters[0] = status.voluntary_ctxt_switches;
+            p.counters[1] = status.nonvoluntary_ctxt_switches;
+            true
         }
     }
 
-    fn with_label(
-        labels: &[(&'static str, String)],
-        key: &'static str,
-        value: &str,
-    ) -> Vec<(&'static str, String)> {
-        labels
-            .iter()
-            .cloned()
-            .chain([(key, value.to_owned())])
-            .collect()
+    /// Open descriptors: the entries of `/proc/<pid>/fd` (same user or root
+    /// only).
+    fn open_fds(pid: i32) -> Option<u64> {
+        let dir = std::fs::read_dir(format!("/proc/{pid}/fd")).ok()?;
+        Some(dir.flatten().count() as u64)
     }
 
-    fn export_gauges(labels: &[(&'static str, String)], g: &Gauges) {
-        gauge!(
-            "procstat_cpu_seconds_total",
-            with_label(labels, "mode", "user").as_slice()
-        )
-        .set(g.cpu[0]);
-        gauge!(
-            "procstat_cpu_seconds_total",
-            with_label(labels, "mode", "system").as_slice()
-        )
-        .set(g.cpu[1]);
-        gauge!("procstat_memory_rss_bytes", labels).set(g.rss as f64);
-        gauge!("procstat_memory_virtual_bytes", labels).set(g.virt as f64);
-        gauge!("procstat_threads", labels).set(g.threads as f64);
-        if let Some(fds) = g.fds {
-            gauge!("procstat_open_fds", labels).set(fds as f64);
+    /// Storage bytes read and written (same user or root only).
+    fn block_io(pid: i32, text: &mut String) -> Option<(u64, u64)> {
+        read_into(format!("/proc/{pid}/io"), text).ok()?;
+        parse_linux_io(text)
+    }
+
+    impl Collector for Processes {
+        fn name(&self) -> &'static str {
+            "processes"
         }
-        gauge!("procstat_start_time_seconds", labels).set(g.start_time);
+
+        fn describe(&self) {
+            describe();
+        }
+
+        async fn collect(&mut self) -> Result<()> {
+            let want_procs = !self.procstat.is_empty();
+            let want_cmdline = self.procstat.needs_cmdline();
+            let mut counts = [0u64; LINUX_STATES.len()];
+            let mut threads = 0u64;
+            let mut procs = Vec::new();
+            for entry in std::fs::read_dir("/proc").context("listing /proc")? {
+                let Some(pid) = entry
+                    .ok()
+                    .and_then(|e| e.file_name().to_str()?.parse::<i32>().ok())
+                else {
+                    continue;
+                };
+                // The process may have exited since the listing.
+                if self.read_text(pid, "stat").is_err() {
+                    continue;
+                }
+                let Some(stat) = parse_linux_stat(&self.text) else {
+                    continue;
+                };
+                if let Some(i) = linux_state(stat.state) {
+                    counts[i] += 1;
+                }
+                threads += u64::from(stat.threads);
+                if !want_procs {
+                    continue;
+                }
+                let ticks = self.clk_tck;
+                let mut p = Proc {
+                    pid,
+                    name: stat.comm.to_owned(),
+                    cmdline: None,
+                    user: String::new(),
+                    threads: stat.threads,
+                    rss_bytes: 0,
+                    virtual_bytes: stat.vsize,
+                    start_time: self.btime + stat.starttime as f64 / ticks,
+                    open_fds: None,
+                    cpu_user: stat.utime as f64 / ticks,
+                    cpu_system: stat.stime as f64 / ticks,
+                    counters: [0, 0, 0, 0, stat.majflt, stat.minflt],
+                };
+                let kernel = stat.flags & PF_KTHREAD != 0;
+                let truncated = p.name.len() >= COMMLEN;
+                if !kernel && (want_cmdline || truncated) {
+                    p.cmdline = self.cmdline(pid);
+                }
+                if truncated {
+                    let argv0 = p.cmdline.as_deref().and_then(|c| c.split(' ').next());
+                    let full = full_name(&p.name, argv0).to_owned();
+                    p.name = full;
+                }
+                if self.procstat.may_match(&p) && self.read_status(&mut p) {
+                    procs.push(p);
+                }
+            }
+            if self.states {
+                for ((_, state), count) in LINUX_STATES.iter().zip(counts) {
+                    gauge!("processes", "state" => *state).set(count as f64);
+                }
+                gauge!("processes_threads").set(threads as f64);
+            }
+            if want_procs {
+                let text = &mut self.text;
+                self.procstat.export(&procs, |p| {
+                    p.open_fds = open_fds(p.pid);
+                    if let Some((read, write)) = block_io(p.pid, text) {
+                        p.counters[2] = read;
+                        p.counters[3] = write;
+                    }
+                });
+            }
+            Ok(())
+        }
     }
 }
 
@@ -811,6 +1305,19 @@ mod tests {
         assert_eq!(state_char(5, 0, 0), 'Z');
         assert_eq!(state_char(6, 0, 0), 'W');
         assert_eq!(state_char(7, 0, 0), 'L');
+        assert_eq!(STATES.len(), 8);
+    }
+
+    #[test]
+    fn maps_linux_states() {
+        let name = |c| linux_state(c).map(|i| LINUX_STATES[i].1);
+        assert_eq!(name('R'), Some("running"));
+        assert_eq!(name('D'), Some("disk_sleep"));
+        assert_eq!(name('I'), Some("idle"));
+        assert_eq!(name('t'), Some("tracing_stop"));
+        assert_eq!(name('T'), Some("stopped"));
+        assert_eq!(name('x'), Some("dead"));
+        assert_eq!(name('W'), None);
     }
 
     #[test]
@@ -839,8 +1346,7 @@ mod tests {
 
     #[test]
     fn restores_truncated_names() {
-        let comm = "http_responsetime_e";
-        assert_eq!(comm.len(), COMMLEN);
+        let comm = &"http_responsetime_exporter"[..COMMLEN];
         assert_eq!(
             full_name(comm, Some("/usr/local/bin/http_responsetime_exporter")),
             "http_responsetime_exporter"
@@ -856,6 +1362,98 @@ mod tests {
             "nginx",
             "short names are used as is"
         );
+    }
+
+    /// From an Arch Linux desktop (Firefox content process).
+    const STAT: &str = "1145561 (Isolated Web Co) S 2809195 2809089 2809089 0 -1 4194624 369737 0 \
+                        9 0 4456 317 0 0 20 0 29 0 63312400 3507707904 110210 \
+                        18446744073709551615 94464260383648 94464260833296 140737183586416 0 0 0 \
+                        0 69635 1082134264 0 0 0 17 2 0 0 0 0 0 94464260847400 94464260850000 \
+                        94464958451712 140737183593907 140737183594170 140737183594170 \
+                        140737183596511 0\n";
+
+    #[test]
+    fn parses_linux_stat() {
+        let stat = parse_linux_stat(STAT).unwrap();
+        assert_eq!(
+            stat,
+            LinuxStat {
+                comm: "Isolated Web Co",
+                state: 'S',
+                flags: 4_194_624,
+                minflt: 369_737,
+                majflt: 9,
+                utime: 4456,
+                stime: 317,
+                threads: 29,
+                starttime: 63_312_400,
+                vsize: 3_507_707_904,
+            }
+        );
+        assert_eq!(stat.flags & PF_KTHREAD, 0);
+
+        // A name with spaces and parentheses, and a kernel thread.
+        let odd = STAT.replace("(Isolated Web Co)", "(a) b (c))");
+        assert_eq!(parse_linux_stat(&odd).unwrap().comm, "a) b (c)");
+        let kthread = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 264 0 0 20 0 1 0 17 0 0 \
+                       18446744073709551615 0 0 0 0 0 0 0 2147483647 0 0 0 0 0 31 0 0 0 0 0 0 0 0 \
+                       0 0 0 0 0";
+        let k = parse_linux_stat(kthread).unwrap();
+        assert_ne!(k.flags & PF_KTHREAD, 0);
+        assert_eq!((k.stime, k.starttime, k.vsize), (264, 17, 0));
+
+        // Real-time priorities are negative.
+        let rt = STAT.replace(" 20 0 29 ", " -51 0 29 ");
+        assert_eq!(parse_linux_stat(&rt).unwrap().threads, 29);
+        assert_eq!(parse_linux_stat("1 (x) S 1 2"), None, "truncated");
+    }
+
+    #[test]
+    fn parses_linux_status_and_io() {
+        // Excerpt of a zsh's status (tabs as spaces).
+        let status = "Name:   zsh
+State:  S (sleeping)
+Uid:    1000    1001    1000    1000
+Gid:    1000    1000    1000    1000
+VmSize:    18336 kB
+VmRSS:      2208 kB
+Threads:        1
+voluntary_ctxt_switches:        434
+nonvoluntary_ctxt_switches:     27
+";
+        assert_eq!(
+            parse_linux_status(status),
+            Some(LinuxStatus {
+                euid: 1001,
+                rss_bytes: 2208 * 1024,
+                voluntary_ctxt_switches: 434,
+                nonvoluntary_ctxt_switches: 27,
+            })
+        );
+        let kthread = status.replace("VmRSS:      2208 kB\n", "");
+        assert_eq!(parse_linux_status(&kthread).unwrap().rss_bytes, 0);
+        assert_eq!(parse_linux_status("Name:   zsh\n"), None);
+
+        let io = "rchar: 2012
+wchar: 0
+syscr: 7
+syscw: 0
+read_bytes: 4096
+write_bytes: 8192
+cancelled_write_bytes: 0
+";
+        assert_eq!(parse_linux_io(io), Some((4096, 8192)));
+        assert_eq!(parse_linux_io("rchar: 1\n"), None);
+
+        assert_eq!(
+            parse_btime("cpu  1 2 3\nctxt 99\nbtime 1760427600\nprocesses 5\n"),
+            Some(1_760_427_600)
+        );
+        assert_eq!(
+            join_cmdline(b"/usr/bin/python3\0-m\0\0http.server\0"),
+            Some("/usr/bin/python3 -m http.server".into())
+        );
+        assert_eq!(join_cmdline(b""), None);
     }
 
     fn proc(pid: i32, name: &str, cmdline: &str, user: &str) -> Proc {
@@ -901,6 +1499,7 @@ mod tests {
         assert_eq!(both.label, "exe=^nginx$,user=www");
         assert!(both.matches(&proc(5, "nginx", "", "www")));
         assert!(!both.matches(&proc(6, "nginx", "", "root")));
+        assert!(both.matches_ignoring_user(&proc(6, "nginx", "", "")));
     }
 
     #[test]

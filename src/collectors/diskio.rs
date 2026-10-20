@@ -9,11 +9,24 @@
 //! request outstanding; `rate()` of it is iostat's `%b`. Unlike libdevstat,
 //! the busy time includes the in-flight interval of a device that is busy at
 //! the moment of reading.
+//!
+//! Linux source: `/proc/diskstats` (Documentation/admin-guide/iostats.rst),
+//! the same counters iostat(1) and `vmstat -d` read. Types map as read,
+//! write, free = discard and other = flush; sectors are always 512 bytes.
+//! The kernel prints the per-type times and `io_ticks` (busy time) as 32-bit
+//! milliseconds that wrap after 49.7 days of accumulated time, so they are
+//! accumulated from wrapping deltas; a device whose request counters drop
+//! (re-attached under the same name) starts over on top of its old totals.
+//! Without a `devices` list, whole disks are reported (the entries of
+//! `/sys/block`, including virtual ones like zram, dm and md, but no
+//! partitions), except loop and ram devices that never did I/O. `devices`
+//! may name partitions too.
 
-// The helpers are only used by the FreeBSD implementation (and tests).
+// The helpers are only used by the FreeBSD and Linux implementations (and
+// tests).
 #![cfg_attr(
-    not(target_os = "freebsd"),
-    expect(dead_code, reason = "used by the FreeBSD implementation")
+    not(any(target_os = "freebsd", target_os = "linux")),
+    expect(dead_code, reason = "used by the FreeBSD and Linux implementations")
 )]
 
 use std::time::Duration;
@@ -35,9 +48,15 @@ pub struct Config {
 }
 
 pub fn describe() {
+    #[cfg(not(target_os = "linux"))]
     describe_counter!(
         "diskio_operations_total",
         "Completed requests by type (read, write, free = TRIM/DELETE, other = e.g. cache flush)."
+    );
+    #[cfg(target_os = "linux")]
+    describe_counter!(
+        "diskio_operations_total",
+        "Completed requests by type (read, write, discard, flush)."
     );
     describe_counter!(
         "diskio_bytes_total",
@@ -55,11 +74,14 @@ pub fn describe() {
 }
 
 /// `DEVSTAT_VERSION` this parser understands.
+#[cfg(target_os = "freebsd")]
 pub const DEVSTAT_VERSION: i32 = 6;
 /// `sizeof (struct devstat)` on LP64.
+#[cfg(any(target_os = "freebsd", test))]
 pub const DEVSTAT_SIZE: usize = 288;
 
 /// Field offsets in `struct devstat` (LP64).
+#[cfg(any(target_os = "freebsd", test))]
 mod off {
     pub const SEQUENCE0: usize = 0;
     pub const START_COUNT: usize = 8;
@@ -76,12 +98,19 @@ mod off {
 }
 
 /// `DEVSTAT_TYPE_PASS`: pass(4) devices duplicate their disk's statistics.
+#[cfg(any(target_os = "freebsd", test))]
 const DEVSTAT_TYPE_PASS: u32 = 0x100;
 
 /// Transaction types in `bytes[]`/`operations[]`/`duration[]` order
 /// (`devstat_trans_flags`).
+#[cfg(not(target_os = "linux"))]
 pub const TYPES: [&str; 4] = ["other", "read", "write", "free"];
 
+/// The same slots under the names `/proc/diskstats` and the block layer use.
+#[cfg(any(target_os = "linux", test))]
+pub const LINUX_TYPES: [&str; 4] = ["flush", "read", "write", "discard"];
+
+#[cfg(any(target_os = "freebsd", test))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DevStat {
     pub name: String,
@@ -96,6 +125,7 @@ pub struct DevStat {
     pub in_progress: u32,
 }
 
+#[cfg(any(target_os = "freebsd", test))]
 impl DevStat {
     /// Busy time including the interval since `busy_from` if requests are
     /// outstanding at `uptime` (seconds since boot).
@@ -108,15 +138,18 @@ impl DevStat {
     }
 }
 
+#[cfg(any(target_os = "freebsd", test))]
 fn u32_at(rec: &[u8], at: usize) -> u32 {
     u32::from_ne_bytes(rec[at..at + 4].try_into().expect("4 bytes"))
 }
 
+#[cfg(any(target_os = "freebsd", test))]
 fn u64_at(rec: &[u8], at: usize) -> u64 {
     u64::from_ne_bytes(rec[at..at + 8].try_into().expect("8 bytes"))
 }
 
 /// `struct bintime` (seconds + 64-bit binary fraction) in seconds.
+#[cfg(any(target_os = "freebsd", test))]
 fn bintime_at(rec: &[u8], at: usize) -> f64 {
     let sec = i64::from_ne_bytes(rec[at..at + 8].try_into().expect("8 bytes"));
     let frac = u64_at(rec, at + 8);
@@ -125,6 +158,7 @@ fn bintime_at(rec: &[u8], at: usize) -> f64 {
 
 /// Parses the `kern.devstat.all` output. Pass devices and records torn by a
 /// concurrent update (`sequence0 != sequence1`) are skipped.
+#[cfg(any(target_os = "freebsd", test))]
 pub fn parse(buf: &[u8]) -> Result<Vec<DevStat>, String> {
     let records = buf
         .get(size_of::<i64>()..)
@@ -163,10 +197,111 @@ pub fn parse(buf: &[u8]) -> Result<Vec<DevStat>, String> {
     Ok(out)
 }
 
-freebsd_only!(DiskIo, "diskio");
+/// One `/proc/diskstats` line. Arrays are in [`LINUX_TYPES`] order.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct DiskStats {
+    pub operations: [u64; 4],
+    /// 512-byte sectors; always 0 for flushes.
+    pub sectors: [u64; 4],
+    /// Milliseconds spent on completed requests (32-bit, wraps).
+    pub millis: [u32; 4],
+    pub in_progress: u32,
+    /// Milliseconds with requests outstanding (32-bit, wraps).
+    pub busy_millis: u32,
+}
+
+/// Parses `/proc/diskstats`: `major minor name` followed by 11 fields, 15
+/// with discards (4.18+) or 17 with flushes (5.5+). Malformed lines are
+/// skipped.
+#[cfg(any(target_os = "linux", test))]
+pub fn parse_diskstats(text: &str) -> Vec<(&str, DiskStats)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let mut fields = line.split_ascii_whitespace().skip(2);
+        let Some(name) = fields.next() else { continue };
+        let Ok(values) = fields.map(str::parse::<u64>).collect::<Result<Vec<_>, _>>() else {
+            continue;
+        };
+        if values.len() < 11 {
+            continue;
+        }
+        let at = |i: usize| values.get(i).copied().unwrap_or(0);
+        // The kernel prints the times as `unsigned int`.
+        let millis = |i: usize| u32::try_from(at(i)).unwrap_or(u32::MAX);
+        out.push((
+            name,
+            DiskStats {
+                operations: [at(15), at(0), at(4), at(11)],
+                sectors: [0, at(2), at(6), at(13)],
+                millis: [millis(16), millis(3), millis(7), millis(14)],
+                in_progress: millis(8),
+                busy_millis: millis(9),
+            },
+        ));
+    }
+    out
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl DiskStats {
+    /// Whether a request or sector counter dropped since `last`: the device
+    /// was re-attached and its counters started over.
+    fn restarted_since(&self, last: &Self) -> bool {
+        (0..LINUX_TYPES.len())
+            .any(|i| self.operations[i] < last.operations[i] || self.sectors[i] < last.sectors[i])
+    }
+}
+
+/// Monotonic totals of one Linux device, in kernel units (bytes,
+/// milliseconds), carried across 32-bit wraps of the time fields and resets
+/// of the whole device.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Totals {
+    pub operations: [u64; 4],
+    pub bytes: [u64; 4],
+    pub millis: [u64; 4],
+    pub busy_millis: u64,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl Totals {
+    fn add(&mut self, operations: [u64; 4], sectors: [u64; 4], millis: [u64; 4], busy: u64) {
+        for i in 0..LINUX_TYPES.len() {
+            self.operations[i] = self.operations[i].saturating_add(operations[i]);
+            self.bytes[i] = self.bytes[i].saturating_add(sectors[i].saturating_mul(512));
+            self.millis[i] = self.millis[i].saturating_add(millis[i]);
+        }
+        self.busy_millis = self.busy_millis.saturating_add(busy);
+    }
+
+    /// Advances from the previous reading `last` (if any) to `now`.
+    pub fn advance(&mut self, last: Option<&DiskStats>, now: &DiskStats) {
+        match last.filter(|last| !now.restarted_since(last)) {
+            Some(last) => self.add(
+                std::array::from_fn(|i| now.operations[i] - last.operations[i]),
+                std::array::from_fn(|i| now.sectors[i] - last.sectors[i]),
+                std::array::from_fn(|i| u64::from(now.millis[i].wrapping_sub(last.millis[i]))),
+                u64::from(now.busy_millis.wrapping_sub(last.busy_millis)),
+            ),
+            // New or re-attached device: its counters started from zero.
+            None => self.add(
+                now.operations,
+                now.sectors,
+                now.millis.map(u64::from),
+                u64::from(now.busy_millis),
+            ),
+        }
+    }
+}
+
+native_only!(DiskIo, "diskio");
 
 #[cfg(target_os = "freebsd")]
 pub use freebsd::DiskIo;
+#[cfg(target_os = "linux")]
+pub use linux::DiskIo;
 
 #[cfg(target_os = "freebsd")]
 mod freebsd {
@@ -283,6 +418,152 @@ mod freebsd {
     }
 }
 
+#[cfg(target_os = "linux")]
+mod linux {
+    use std::{
+        collections::{
+            HashMap,
+            HashSet,
+            hash_map::Entry,
+        },
+        time::{
+            Duration,
+            Instant,
+        },
+    };
+
+    use anyhow::{
+        Context,
+        Result,
+    };
+    use metrics::{
+        counter,
+        gauge,
+    };
+
+    use super::{
+        Config,
+        DiskStats,
+        LINUX_TYPES,
+        Totals,
+        describe,
+        parse_diskstats,
+    };
+    use crate::{
+        collector::Collector,
+        sys::linux::read_into,
+    };
+
+    /// Devices not seen for this long are forgotten, like
+    /// [`crate::counter::Monotonic`] series.
+    const RETENTION: Duration = Duration::from_secs(3600);
+
+    struct Device {
+        last: DiskStats,
+        totals: Totals,
+        seen: Instant,
+    }
+
+    pub struct DiskIo {
+        config: Config,
+        devices: HashMap<String, Device>,
+        buf: String,
+    }
+
+    impl DiskIo {
+        pub fn new(config: &Config) -> Result<Self> {
+            let mut buf = String::new();
+            read_into("/proc/diskstats", &mut buf).context("reading /proc/diskstats")?;
+            Ok(Self {
+                config: config.clone(),
+                devices: HashMap::new(),
+                buf,
+            })
+        }
+    }
+
+    /// Whole disks: the entries of `/sys/block`, where `/` in a name is
+    /// written as `!` (e.g. `cciss!c0d0`).
+    fn whole_disks() -> Result<HashSet<String>> {
+        std::fs::read_dir("/sys/block")
+            .context("listing /sys/block")?
+            .map(|entry| Ok(entry?.file_name().to_string_lossy().replace('!', "/")))
+            .collect::<std::io::Result<_>>()
+            .context("listing /sys/block")
+    }
+
+    /// Loop and ram devices exist in numbers whether used or not.
+    fn unused_placeholder(name: &str, stats: &DiskStats) -> bool {
+        (name.starts_with("loop") || name.starts_with("ram"))
+            && stats.operations.iter().all(|&ops| ops == 0)
+    }
+
+    impl Collector for DiskIo {
+        fn name(&self) -> &'static str {
+            "diskio"
+        }
+
+        fn describe(&self) {
+            describe();
+        }
+
+        async fn collect(&mut self) -> Result<()> {
+            let disks = if self.config.devices.is_empty() {
+                Some(whole_disks()?)
+            } else {
+                None
+            };
+            read_into("/proc/diskstats", &mut self.buf).context("reading /proc/diskstats")?;
+            let now = Instant::now();
+            for (name, stats) in parse_diskstats(&self.buf) {
+                let wanted = match &disks {
+                    Some(disks) => disks.contains(name) && !unused_placeholder(name, &stats),
+                    None => self.config.devices.iter().any(|d| d == name),
+                };
+                if !wanted {
+                    continue;
+                }
+                let device = match self.devices.entry(name.to_owned()) {
+                    Entry::Occupied(entry) => {
+                        let device = entry.into_mut();
+                        device.totals.advance(Some(&device.last), &stats);
+                        device
+                    }
+                    Entry::Vacant(entry) => {
+                        let mut totals = Totals::default();
+                        totals.advance(None, &stats);
+                        entry.insert(Device {
+                            last: stats,
+                            totals,
+                            seen: now,
+                        })
+                    }
+                };
+                device.last = stats;
+                device.seen = now;
+
+                let totals = &device.totals;
+                for (i, typ) in LINUX_TYPES.iter().enumerate() {
+                    let labels = [("device", name.to_owned()), ("type", (*typ).to_owned())];
+                    counter!("diskio_operations_total", &labels).absolute(totals.operations[i]);
+                    gauge!("diskio_time_seconds_total", &labels).set(totals.millis[i] as f64 / 1e3);
+                    // Flushes transfer nothing.
+                    if i != 0 {
+                        counter!("diskio_bytes_total", &labels).absolute(totals.bytes[i]);
+                    }
+                }
+                gauge!("diskio_busy_seconds_total", "device" => name.to_owned())
+                    .set(totals.busy_millis as f64 / 1e3);
+                gauge!("diskio_in_progress", "device" => name.to_owned())
+                    .set(f64::from(stats.in_progress));
+            }
+            self.devices
+                .retain(|_, device| now.duration_since(device.seen) < RETENTION);
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +630,74 @@ mod tests {
     fn rejects_unknown_layout() {
         assert!(parse(&[0u8; 8 + DEVSTAT_SIZE - 8]).is_err());
         assert_eq!(parse(&7i64.to_ne_bytes()).unwrap(), vec![], "no devices");
+    }
+
+    /// From an Arch Linux host (kernel 7.2), plus a 4.18-era line without
+    /// flush fields and a pre-4.18 line without discard fields.
+    const DISKSTATS: &str = "\
+ 259       1 nvme1n1 22812353 40145 1728789278 23320356 17566433 13032902 1641758503 65724729 0 \
+                             11296108 90450760 1599 69115 285996488 208683 759221 1196990
+ 259       4 nvme1n1p2 22810912 36749 1728761559 23319895 17566415 13032902 1641758492 65724726 0 \
+                             11070431 89253297 1592 69115 284374512 208675 0 0
+ 253       0 zram0 295458 0 2367192 1835 2241058 0 18856440 49589 2 58593 51424 0 0 0 0 0 0
+   8       0 sda 10 0 80 5 20 0 160 7 0 12 12 3 0 24 4
+   8      16 sdb 10 0 80 5 20 0 160 7 0 12 12
+   7       0 loop0 x 0 0 0 0 0 0 0 0 0 0
+   7       1 loop1 0 0 0 0
+";
+
+    #[test]
+    fn parses_diskstats() {
+        let disks = parse_diskstats(DISKSTATS);
+        let names: Vec<_> = disks.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            names,
+            ["nvme1n1", "nvme1n1p2", "zram0", "sda", "sdb"],
+            "malformed and short lines are skipped"
+        );
+        assert_eq!(
+            disks[0].1,
+            DiskStats {
+                operations: [759_221, 22_812_353, 17_566_433, 1599],
+                sectors: [0, 1_728_789_278, 1_641_758_503, 285_996_488],
+                millis: [1_196_990, 23_320_356, 65_724_729, 208_683],
+                in_progress: 0,
+                busy_millis: 11_296_108,
+            }
+        );
+        assert_eq!(disks[2].1.in_progress, 2);
+        assert_eq!(disks[3].1.operations, [0, 10, 20, 3], "no flush fields");
+        assert_eq!(disks[4].1.operations, [0, 10, 20, 0], "no discard fields");
+        assert_eq!(disks[4].1.busy_millis, 12);
+    }
+
+    #[test]
+    fn accumulates_across_wraps_and_resets() {
+        let stats = |ops: u64, millis: u32| DiskStats {
+            operations: [0, ops, 0, 0],
+            sectors: [0, ops * 8, 0, 0],
+            millis: [0, millis, 0, 0],
+            in_progress: 0,
+            busy_millis: millis,
+        };
+        let mut totals = Totals::default();
+        let first = stats(100, u32::MAX - 10);
+        totals.advance(None, &first);
+        assert_eq!(totals.operations[1], 100);
+        assert_eq!(totals.bytes[1], 100 * 8 * 512);
+        assert_eq!(totals.millis[1], u64::from(u32::MAX - 10));
+
+        // The 32-bit millisecond counters wrap; the totals keep growing.
+        let wrapped = stats(150, 20);
+        totals.advance(Some(&first), &wrapped);
+        assert_eq!(totals.operations[1], 150);
+        assert_eq!(totals.millis[1], u64::from(u32::MAX) + 21);
+        assert_eq!(totals.busy_millis, u64::from(u32::MAX) + 21);
+
+        // Re-attached device: counters start over, totals continue.
+        let reset = stats(5, 3);
+        totals.advance(Some(&wrapped), &reset);
+        assert_eq!(totals.operations[1], 155);
+        assert_eq!(totals.millis[1], u64::from(u32::MAX) + 24);
     }
 }
